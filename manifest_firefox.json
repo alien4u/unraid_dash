@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "Unraid Dash",
+  "version": "1.0.0",
+  "description": "Dashboard popup for monitoring Unraid servers — system, array, Docker, VMs, and notifications at a glance.",
+  "permissions": [
+    "storage",
+    "alarms"
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "icons": {
+    "16": "img/icon16.png",
+    "24": "img/icon24.png",
+    "32": "img/icon32.png",
+    "48": "img/icon48.png",
+    "128": "img/icon128.png"
+  },
+  "background": {
+    "service_worker": "js/background.js",
+    "scripts": ["js/background.js"],
+    "preferred_environment": ["service_worker"]
+  },
+  "action": {
+    "default_title": "Unraid Dash",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "img/icon16.png",
+      "24": "img/icon24.png",
+      "32": "img/icon32.png"
+    }
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "unraid-dash@alien-technology.com",
+      "strict_min_version": "121.0",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
+    }
+  }
+}

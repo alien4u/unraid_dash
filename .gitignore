@@ -1,0 +1,5 @@
+dist/
+store/
+build.sh
+CHANGELOG.md
+.DS_Store
