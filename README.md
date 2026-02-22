@@ -139,7 +139,7 @@ All API calls route through the background service worker to avoid CORS restrict
 
 ## 🌐 Browser Compatibility
 
-Chrome, Edge, and Firefox (MV3, 121+).
+Chrome, Edge, and Firefox (MV3, 142+).
 
 > The default `manifest.json` targets Chrome and Edge. A `manifest_firefox.json` is included for Firefox, which adds the `background.scripts` fallback and `browser_specific_settings` required by Firefox's extension platform.
 
