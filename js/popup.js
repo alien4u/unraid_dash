@@ -39,7 +39,8 @@ const runPopupLogic = async () => {
         UNREACHABLE: 'Server is unreachable. Check the URL and network.',
         TIMEOUT: 'Connection timed out. Server may be busy or offline.',
         NO_SERVER: 'No server configured.',
-        INVALID_CONFIG: 'Invalid server configuration.'
+        INVALID_CONFIG: 'Invalid server configuration.',
+        PERMISSION_DENIED: 'This API key does not have permission to perform this action.'
     };
 
     const oSpinner = document.getElementById('spinner');
@@ -111,6 +112,7 @@ const runPopupLogic = async () => {
     let oDockerUrlOverrides = {};
     let sUrlOverrideContainerId = null;
     let sListSettingsCardType = null;
+    let sCurrentKeyType = null;
 
     const loadStorage = async () => {
 
@@ -321,6 +323,7 @@ const runPopupLogic = async () => {
             }
 
             oCurrentData = pResponse.data;
+            sCurrentKeyType = pResponse.keyType || 'admin';
             renderDashboard();
         });
     };
@@ -454,6 +457,14 @@ const runPopupLogic = async () => {
                 '<div class="ut-detail-row">' +
                     '<span class="ut-detail-label">CPU</span>' +
                     '<span class="ut-detail-value">' + escapeHtml(sCPUBrand) + '</span>' +
+                '</div>' +
+                '<div class="ut-detail-row">' +
+                    '<span class="ut-detail-label">Cores</span>' +
+                    '<span class="ut-detail-value">' + (oCPU.cores || '?') + 'C / ' + (oCPU.threads || '?') + 'T</span>' +
+                '</div>' +
+                '<div class="ut-detail-row">' +
+                    '<span class="ut-detail-label">Memory</span>' +
+                    '<span class="ut-detail-value">' + formatBytes(nMemTotal) + '</span>' +
                 '</div>' +
                 (oNet.ipv4 ? '<div class="ut-detail-row">' +
                     '<span class="ut-detail-label">Network</span>' +
@@ -1005,9 +1016,10 @@ const runPopupLogic = async () => {
                     'data-action="openUrlOverride" data-id="' + escapeHtml(pContainer.id) + '">' +
                     '<svg class="ut-icon"><use href="#ico-settings"/></svg>' +
                 '</button>' +
-                '<button class="ut-item-action" title="' + sActionTitle + '" ' +
-                    'data-action="controlDocker" data-id="' + escapeHtml(pContainer.id) + '" ' +
-                    'data-command="' + sCommand + '">' +
+                '<button class="ut-item-action"' +
+                    (sCurrentKeyType === 'readonly' ? ' disabled title="View-only API key"' : ' title="' + sActionTitle + '"') +
+                    ' data-action="controlDocker" data-id="' + escapeHtml(pContainer.id) + '"' +
+                    ' data-command="' + sCommand + '">' +
                     '<svg class="ut-icon"><use href="' + sActionIcon + '"/></svg>' +
                 '</button>' +
             '</div>' +
@@ -1020,6 +1032,10 @@ const runPopupLogic = async () => {
 
             pBtn.addEventListener('click', () => {
 
+                if (pBtn.disabled) {
+                    return;
+                }
+
                 pBtn.disabled = true;
 
                 chrome.runtime.sendMessage({
@@ -1027,7 +1043,13 @@ const runPopupLogic = async () => {
                     serverId: sActiveServerId,
                     containerId: pBtn.dataset.id,
                     command: pBtn.dataset.command
-                }, () => {
+                }, (pResponse) => {
+
+                    if (pResponse?.error === 'PERMISSION_DENIED') {
+                        sCurrentKeyType = 'readonly';
+                        renderDashboard();
+                        return;
+                    }
 
                     setTimeout(fetchAndRender, 1500);
                 });
@@ -1194,9 +1216,10 @@ const runPopupLogic = async () => {
                 '<span class="ut-status-dot ut-status-dot--' + sStatusClass + '"></span>' +
                 '<span>' + escapeHtml(sName) + '</span>' +
             '</div>' +
-            '<button class="ut-item-action" title="' + sActionTitle + '" ' +
-                'data-action="controlVM" data-id="' + escapeHtml(pVM.id) + '" ' +
-                'data-command="' + sCommand + '">' +
+            '<button class="ut-item-action"' +
+                (sCurrentKeyType === 'readonly' ? ' disabled title="View-only API key"' : ' title="' + sActionTitle + '"') +
+                ' data-action="controlVM" data-id="' + escapeHtml(pVM.id) + '"' +
+                ' data-command="' + sCommand + '">' +
                 '<svg class="ut-icon"><use href="' + sActionIcon + '"/></svg>' +
             '</button>' +
         '</div>';
@@ -1208,6 +1231,10 @@ const runPopupLogic = async () => {
 
             pBtn.addEventListener('click', () => {
 
+                if (pBtn.disabled) {
+                    return;
+                }
+
                 pBtn.disabled = true;
 
                 chrome.runtime.sendMessage({
@@ -1215,7 +1242,13 @@ const runPopupLogic = async () => {
                     serverId: sActiveServerId,
                     vmId: pBtn.dataset.id,
                     command: pBtn.dataset.command
-                }, () => {
+                }, (pResponse) => {
+
+                    if (pResponse?.error === 'PERMISSION_DENIED') {
+                        sCurrentKeyType = 'readonly';
+                        renderDashboard();
+                        return;
+                    }
 
                     setTimeout(fetchAndRender, 2000);
                 });
@@ -1298,8 +1331,9 @@ const runPopupLogic = async () => {
                         '<div class="ut-notif-item-header">' +
                             '<svg class="ut-notif-icon ut-notif-icon--' + sIconClass + '"><use href="' + sIconRef + '"/></svg>' +
                             '<span class="ut-notif-item-title">' + escapeHtml(sTitle) + '</span>' +
-                            '<button class="ut-notif-archive-btn" data-action="archiveNotification" ' +
-                                'data-id="' + escapeHtml(pNotif.id) + '" title="Archive">' +
+                            '<button class="ut-notif-archive-btn"' +
+                                (sCurrentKeyType === 'readonly' ? ' disabled title="View-only API key"' : ' title="Archive"') +
+                                ' data-action="archiveNotification" data-id="' + escapeHtml(pNotif.id) + '">' +
                                 '<svg class="ut-icon"><use href="#ico-check"/></svg>' +
                             '</button>' +
                         '</div>' +
@@ -1324,7 +1358,8 @@ const runPopupLogic = async () => {
                 '</div>' +
                 '<div class="ut-card-header-right">' +
                     '<span class="ut-card-badge">' + nTotal + ' unread</span>' +
-                    (nTotal > 0 ? '<button class="ut-notif-header-archive" data-action="archiveAll" title="Archive all notifications">' +
+                    (nTotal > 0 ? '<button class="ut-notif-header-archive" data-action="archiveAll"' +
+                        (sCurrentKeyType === 'readonly' ? ' disabled title="View-only API key"' : ' title="Archive all notifications"') + '>' +
                         '<svg class="ut-icon"><use href="#ico-check"/></svg>' +
                         '<span>Archive All</span>' +
                     '</button>' : '') +
@@ -1409,6 +1444,10 @@ const runPopupLogic = async () => {
 
             pBtn.addEventListener('click', () => {
 
+                if (pBtn.disabled) {
+                    return;
+                }
+
                 pBtn.disabled = true;
 
                 chrome.runtime.sendMessage({
@@ -1420,6 +1459,12 @@ const runPopupLogic = async () => {
                     if (chrome.runtime.lastError) {
                         console.warn('archiveNotification error:', chrome.runtime.lastError.message);
                         pBtn.disabled = false;
+                        return;
+                    }
+
+                    if (pResponse?.error === 'PERMISSION_DENIED') {
+                        sCurrentKeyType = 'readonly';
+                        renderDashboard();
                         return;
                     }
 
@@ -1440,6 +1485,10 @@ const runPopupLogic = async () => {
 
             oArchiveAll.addEventListener('click', () => {
 
+                if (oArchiveAll.disabled) {
+                    return;
+                }
+
                 oArchiveAll.disabled = true;
 
                 const oLabel = oArchiveAll.querySelector('span');
@@ -1457,6 +1506,12 @@ const runPopupLogic = async () => {
                         console.warn('archiveAll error:', chrome.runtime.lastError.message);
                         oArchiveAll.disabled = false;
                         if (oLabel) oLabel.textContent = 'Archive All';
+                        return;
+                    }
+
+                    if (pResponse?.error === 'PERMISSION_DENIED') {
+                        sCurrentKeyType = 'readonly';
+                        renderDashboard();
                         return;
                     }
 
@@ -1898,7 +1953,8 @@ const runPopupLogic = async () => {
 
             if (pResponse?.success) {
 
-                showTestResult('Connected to ' + pResponse.name + ' (v' + pResponse.version + ')', true);
+                const sKeyLabel = pResponse.keyType === 'readonly' ? ' - view-only' : '';
+                showTestResult('Connected to ' + pResponse.name + ' (v' + pResponse.version + ')' + sKeyLabel, true);
 
             } else {
 

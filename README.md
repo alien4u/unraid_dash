@@ -28,7 +28,7 @@ Supports multiple servers, configurable auto-refresh, per-card visibility and so
 
 ### 📊 Dashboard Cards
 
-- **System** - CPU usage, RAM usage with progress bars, uptime, server version, and LAN IP address.
+- **System** - CPU brand, cores/threads, total memory, CPU and RAM usage bars, uptime, server version, and LAN IP address.
 
 - **Array** - Array state, total capacity with usage bar, per-disk health indicators with temperature and error counts, parity and cache pools.
 
@@ -43,6 +43,7 @@ Supports multiple servers, configurable auto-refresh, per-card visibility and so
 - Add unlimited servers with display name, URL, and API key.
 - Tab bar for switching between servers.
 - Per-server host permissions, you control exactly which hosts the extension can access.
+- Automatic API key type detection -- read-only keys see a full dashboard with mutation controls (start/stop, archive) disabled.
 
 ### 📋 List Settings (Docker & VMs)
 

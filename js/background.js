@@ -152,6 +152,11 @@ query TestConnection {
   vars { version name }
 }`;
 
+const QUERY_ME = `
+query Me {
+  me { roles permissions { resource actions } }
+}`;
+
 const MUTATION_DOCKER_START = `
 mutation DockerStart($id: PrefixedID!) {
   docker { start(id: $id) { id state status } }
@@ -199,6 +204,47 @@ const MUTATION_ARCHIVE_ALL = `
 mutation ArchiveAll {
   archiveAll { unread { total } }
 }`;
+
+const detectKeyType = (pMeData) => {
+
+    if (!pMeData || !pMeData.me) {
+        return 'readonly';
+    }
+
+    const oMe = pMeData.me;
+
+    if (Array.isArray(oMe.roles) && oMe.roles.includes('ADMIN')) {
+        return 'admin';
+    }
+
+    const aPerms = oMe.permissions || [];
+    const bCanMutate = aPerms.some((pP) => {
+        const aActions = pP.actions || [];
+        return aActions.includes('UPDATE_ANY') || aActions.includes('DELETE_ANY');
+    });
+
+    return bCanMutate ? 'admin' : 'readonly';
+};
+
+const isPermissionMsg = (pMsg) => {
+
+    const sLower = pMsg.toLowerCase();
+
+    return sLower.includes('permission') || sLower.includes('forbidden') ||
+           sLower.includes('not allowed') || sLower.includes('authorized') ||
+           sLower.includes('access denied') || sLower.includes('auth_error');
+};
+
+const isPermissionError = (pErr) => isPermissionMsg(pErr.message || '');
+
+const hasPermissionErrors = (pData) => {
+
+    if (!pData || !pData._errors) {
+        return false;
+    }
+
+    return pData._errors.some(isPermissionMsg);
+};
 
 browserAPI.runtime.onMessage.addListener((pMessage, pSender, pFnSendResponse) => {
 
@@ -376,9 +422,25 @@ const handleFetchDashboard = async (pMessage) => {
         return {error: 'NO_SERVER'};
     }
 
+    let sKeyType = 'admin';
+
+    try {
+
+        const oMeData = await executeGraphQL(oServer.url, oServer.apiKey, QUERY_ME);
+
+        if (hasPermissionErrors(oMeData)) {
+            sKeyType = 'readonly';
+        } else {
+            sKeyType = detectKeyType(oMeData);
+        }
+
+    } catch (pErr) {
+        sKeyType = isPermissionError(pErr) ? 'readonly' : 'admin';
+    }
+
     const oData = await fetchServerDashboard(oServer);
 
-    return {data: oData, serverId: oServer.id};
+    return {data: oData, serverId: oServer.id, keyType: sKeyType};
 };
 
 const handleFetchAllServers = async () => {
@@ -420,10 +482,29 @@ const handleTestConnection = async (pServer) => {
 
     const oData = await executeGraphQL(pServer.url, pServer.apiKey, QUERY_TEST_CONNECTION);
 
+    let sKeyType = 'admin';
+
+    try {
+
+        const oMeData = await executeGraphQL(pServer.url, pServer.apiKey, QUERY_ME);
+
+        if (hasPermissionErrors(oMeData)) {
+            sKeyType = 'readonly';
+        } else {
+            sKeyType = detectKeyType(oMeData);
+        }
+
+    } catch (pErr) {
+        if (isPermissionError(pErr)) {
+            sKeyType = 'readonly';
+        }
+    }
+
     return {
         success: true,
         name: oData.vars?.name || 'Unknown',
-        version: oData.vars?.version || 'Unknown'
+        version: oData.vars?.version || 'Unknown',
+        keyType: sKeyType
     };
 };
 
@@ -436,9 +517,25 @@ const handleControlDocker = async (pMessage) => {
     }
 
     const sQuery = pMessage.command === 'start' ? MUTATION_DOCKER_START : MUTATION_DOCKER_STOP;
-    const oData = await executeGraphQL(oServer.url, oServer.apiKey, sQuery, {id: pMessage.containerId});
 
-    return {success: true, data: oData};
+    try {
+
+        const oData = await executeGraphQL(oServer.url, oServer.apiKey, sQuery, {id: pMessage.containerId});
+
+        if (hasPermissionErrors(oData)) {
+            return {error: 'PERMISSION_DENIED'};
+        }
+
+        return {success: true, data: oData};
+
+    } catch (pErr) {
+
+        if (isPermissionError(pErr)) {
+            return {error: 'PERMISSION_DENIED'};
+        }
+
+        throw pErr;
+    }
 };
 
 const handleControlVM = async (pMessage) => {
@@ -450,9 +547,25 @@ const handleControlVM = async (pMessage) => {
     }
 
     const sQuery = pMessage.command === 'start' ? MUTATION_VM_START : MUTATION_VM_STOP;
-    const oData = await executeGraphQL(oServer.url, oServer.apiKey, sQuery, {id: pMessage.vmId});
 
-    return {success: true, data: oData};
+    try {
+
+        const oData = await executeGraphQL(oServer.url, oServer.apiKey, sQuery, {id: pMessage.vmId});
+
+        if (hasPermissionErrors(oData)) {
+            return {error: 'PERMISSION_DENIED'};
+        }
+
+        return {success: true, data: oData};
+
+    } catch (pErr) {
+
+        if (isPermissionError(pErr)) {
+            return {error: 'PERMISSION_DENIED'};
+        }
+
+        throw pErr;
+    }
 };
 
 const handleFetchNotifications = async (pMessage) => {
@@ -477,9 +590,24 @@ const handleArchiveNotification = async (pMessage) => {
         return {error: 'NO_SERVER'};
     }
 
-    await executeGraphQL(oServer.url, oServer.apiKey, MUTATION_ARCHIVE_NOTIFICATION, {id: pMessage.notificationId});
+    try {
 
-    return {success: true};
+        const oData = await executeGraphQL(oServer.url, oServer.apiKey, MUTATION_ARCHIVE_NOTIFICATION, {id: pMessage.notificationId});
+
+        if (hasPermissionErrors(oData)) {
+            return {error: 'PERMISSION_DENIED'};
+        }
+
+        return {success: true};
+
+    } catch (pErr) {
+
+        if (isPermissionError(pErr)) {
+            return {error: 'PERMISSION_DENIED'};
+        }
+
+        throw pErr;
+    }
 };
 
 const handleArchiveAll = async (pMessage) => {
@@ -490,9 +618,24 @@ const handleArchiveAll = async (pMessage) => {
         return {error: 'NO_SERVER'};
     }
 
-    await executeGraphQL(oServer.url, oServer.apiKey, MUTATION_ARCHIVE_ALL);
+    try {
 
-    return {success: true};
+        const oData = await executeGraphQL(oServer.url, oServer.apiKey, MUTATION_ARCHIVE_ALL);
+
+        if (hasPermissionErrors(oData)) {
+            return {error: 'PERMISSION_DENIED'};
+        }
+
+        return {success: true};
+
+    } catch (pErr) {
+
+        if (isPermissionError(pErr)) {
+            return {error: 'PERMISSION_DENIED'};
+        }
+
+        throw pErr;
+    }
 };
 
 const categorizeError = (pErr) => {
