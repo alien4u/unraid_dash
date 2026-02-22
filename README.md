@@ -4,65 +4,65 @@
 
 # Unraid Dash
 
-**Monitor your Unraid servers at a glance -- system metrics, array status, Docker containers, VMs, and notifications in a single popup.**
+**Monitor your Unraid servers at a glance: system metrics, array status, Docker containers, VMs, and notifications in a single popup.**
 
 ![Version](https://img.shields.io/badge/version-1.0.0-blue)
 ![License](https://img.shields.io/badge/license-FSL--1.1--MIT-green)
 ![Manifest](https://img.shields.io/badge/manifest-v3-orange)
 
-## Store Availability
+## 🏪 Store Availability
 
 | Store | Version | Link |
 |-------|---------|------|
-| Chrome Web Store | -- | Coming soon |
-| Edge Add-ons | -- | Coming soon |
-| Firefox Add-ons | -- | Coming soon |
+| Chrome Web Store | - | Coming soon |
+| Edge Add-ons | - | Coming soon |
+| Firefox Add-ons | - | Coming soon |
 
-## Overview
+## 📖 Overview
 
-Unraid Dash is a browser extension that gives you a quick dashboard view of your Unraid 7.x servers without opening the WebGUI. Click the extension icon to see CPU, RAM, disk health, running containers, VMs, and unread notifications -- all fetched live from the Unraid GraphQL API.
+Unraid Dash is a browser extension that gives you a quick dashboard view of your Unraid 7.x servers without opening the WebGUI. Click the extension icon to see CPU, RAM, disk health, running containers, VMs, and unread notifications, all fetched live from the Unraid GraphQL API.
 
 Supports multiple servers, configurable auto-refresh, per-card visibility and sort settings, container/VM start-stop controls, notification archiving, and light/dark themes.
 
-## Features
+## ✨ Features
 
-### Dashboard Cards
+### 📊 Dashboard Cards
 
-- **System** -- CPU usage, RAM usage with progress bars, uptime, server version, and LAN IP address.
+- **System** - CPU usage, RAM usage with progress bars, uptime, server version, and LAN IP address.
 
-- **Array** -- Array state, total capacity with usage bar, per-disk health indicators with temperature and error counts, parity and cache pools.
+- **Array** - Array state, total capacity with usage bar, per-disk health indicators with temperature and error counts, parity and cache pools.
 
-- **Docker** -- All containers with running/stopped status, start/stop controls, auto-detected WebUI links, and per-container URL overrides.
+- **🐳 Docker** - All containers with running/stopped status, start/stop controls, auto-detected WebUI links, and per-container URL overrides.
 
-- **VMs** -- All virtual machines with running/stopped/paused status and start/stop controls.
+- **💻 VMs** - All virtual machines with running/stopped/paused status and start/stop controls.
 
-- **Notifications** -- Unread alert, warning, and info counts. Expandable list with individual and bulk archive actions. Badge count on the extension icon.
+- **🔔 Notifications** - Unread alert, warning, and info counts. Expandable list with individual and bulk archive actions. Badge count on the extension icon.
 
-### Multi-Server
+### 🖥️ Multi-Server
 
 - Add unlimited servers with display name, URL, and API key.
 - Tab bar for switching between servers.
-- Per-server host permissions -- you control exactly which hosts the extension can access.
+- Per-server host permissions, you control exactly which hosts the extension can access.
 
-### List Settings (Docker & VMs)
+### 📋 List Settings (Docker & VMs)
 
-- **Sort order** -- Running first A-Z (default), A-Z, Z-A, or custom drag-and-drop order.
-- **Visible count** -- Show 5, 6, 10, 15, 20, or all items before the "Show all" toggle.
-- **Custom order** -- Drag-and-drop reordering via a modal interface. New items are appended automatically.
+- **Sort order** - Running first A-Z (default), A-Z, Z-A, or custom drag-and-drop order.
+- **Visible count** - Show 5, 6, 10, 15, 20, or all items before the "Show all" toggle.
+- **Custom order** - Drag-and-drop reordering via a modal interface. New items are appended automatically.
 
-### UI & Preferences
+### 🎨 UI & Preferences
 
-- **Dark / Light mode** -- Toggle with setting persistence.
-- **Card visibility** -- Show or hide individual cards from Settings.
-- **Collapsible cards** -- Click any card header to collapse/expand. State persists across sessions.
-- **Auto-refresh** -- Configurable interval: 30s, 60s, 5 minutes, or off.
+- **Dark / Light mode** - Toggle with setting persistence.
+- **Card visibility** - Show or hide individual cards from Settings.
+- **Collapsible cards** - Click any card header to collapse/expand. State persists across sessions.
+- **Auto-refresh** - Configurable interval: 30s, 60s, 5 minutes, or off.
 
-## Requirements
+## 📋 Requirements
 
 - **Unraid 7.2+** with the GraphQL API enabled
 - An API key generated from the Unraid WebGUI
 
-## How It Works
+## ⚙️ How It Works
 
 1. Click the Unraid Dash icon in the browser toolbar.
 2. On first use, open Settings (gear icon) and add a server with its URL and API key.
@@ -73,10 +73,10 @@ Supports multiple servers, configurable auto-refresh, per-card visibility and so
 
 All API calls route through the background service worker to avoid CORS restrictions. The popup communicates with the service worker via `chrome.runtime.sendMessage`.
 
-## Architecture
+## 🏗️ Architecture
 
 ```
-[Popup — Dashboard UI]
+[Popup - Dashboard UI]
         |
     popup.html / popup.js
         |
@@ -87,7 +87,7 @@ All API calls route through the background service worker to avoid CORS restrict
         +-- chrome.runtime.sendMessage
                     |
                     v
-[Background — Service Worker]
+[Background - Service Worker]
         |
     background.js
         |
@@ -107,7 +107,7 @@ All API calls route through the background service worker to avoid CORS restrict
                 +-- dockerUrlOverrides
 ```
 
-## Installation
+## 🔧 Installation
 
 ### From Source (Developer Mode)
 
@@ -121,44 +121,34 @@ All API calls route through the background service worker to avoid CORS restrict
 
 > **Firefox users:** Before loading, rename `manifest_firefox.json` to `manifest.json` (replacing the original). The Firefox manifest includes the required `background.scripts` fallback and `browser_specific_settings` for Firefox compatibility.
 
-### Building Store Packages
-
-```bash
-bash build.sh
-```
-
-This generates:
-- `dist/unraid_dash_v{version}_chrome_edge.zip`
-- `dist/unraid_dash_v{version}_firefox.zip`
-
-### Generating an API Key
+### 🔑 Generating an API Key
 
 1. Open your Unraid WebGUI
 2. Navigate to **Settings > Management Access > API Keys**
 3. Create a new API key with appropriate permissions
 4. Copy the key and paste it into the extension settings
 
-## Permissions
+## 🔒 Permissions
 
 | Permission | Purpose |
 |------------|---------|
 | `storage` | Save server configurations, UI preferences, and URL overrides locally |
 | `alarms` | Periodic badge updates for unread notification counts |
-| `optional_host_permissions (http/https)` | Connect to your Unraid servers. Granted per-server when you add one -- you control exactly which hosts the extension can access. |
+| `optional_host_permissions (http/https)` | Connect to your Unraid servers. Granted per-server when you add one, you control exactly which hosts the extension can access. |
 
-## Browser Compatibility
+## 🌐 Browser Compatibility
 
 Chrome, Edge, and Firefox (MV3, 121+).
 
 > The default `manifest.json` targets Chrome and Edge. A `manifest_firefox.json` is included for Firefox, which adds the `background.scripts` fallback and `browser_specific_settings` required by Firefox's extension platform.
 
-## Acknowledgments
+## 🙏 Acknowledgments
 
 - Code co-authored with **Claude Code**
 
-## License
+## 📄 License
 
-[FSL-1.1-MIT](LICENSE) -- Free to use for any non-competing purpose. Converts to MIT automatically after two years.
+[FSL-1.1-MIT](LICENSE) - Free to use for any non-competing purpose. Converts to MIT automatically after two years.
 
 ---
 
