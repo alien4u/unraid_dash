@@ -14,9 +14,9 @@
 
 | Store | Version | Link |
 |-------|---------|------|
-| Chrome Web Store | - | Coming soon |
-| Edge Add-ons | - | Coming soon |
-| Firefox Add-ons | - | Coming soon |
+| Chrome Web Store | 1.0.0 | [Install](https://chromewebstore.google.com/detail/agdbddldhhjehjplobapnnpijojcaafk) |
+| Edge Add-ons | 1.0.0 | Under review |
+| Firefox Add-ons | 1.0.0 | Under review |
 
 ## 📖 Overview
 
