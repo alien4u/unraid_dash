@@ -15,7 +15,7 @@
 | Store | Version | Link |
 |-------|---------|------|
 | Chrome Web Store | 1.0.0 | [Install](https://chromewebstore.google.com/detail/agdbddldhhjehjplobapnnpijojcaafk) |
-| Edge Add-ons | 1.0.0 | Under review |
+| Edge Add-ons | 1.0.0 | [Install](https://microsoftedge.microsoft.com/addons/detail/unraid-dash/mkejneiecljggcdblblgpcfoaipjdpie) |
 | Firefox Add-ons | 1.0.0 | Under review |
 
 ## 📖 Overview
