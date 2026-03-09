@@ -14,11 +14,11 @@
 
 | Store | Version | Link |
 |-------|---------|------|
-| Chrome Web Store | v1.0.0 | [Install](https://chromewebstore.google.com/detail/agdbddldhhjehjplobapnnpijojcaafk) |
+| Chrome Web Store | v1.1.0 | [Install](https://chromewebstore.google.com/detail/agdbddldhhjehjplobapnnpijojcaafk) |
 | Edge Add-ons | v1.1.0 | [Install](https://microsoftedge.microsoft.com/addons/detail/unraid-dash/mkejneiecljggcdblblgpcfoaipjdpie) |
 | Firefox Add-ons | v1.1.0 | [Install](https://addons.mozilla.org/en-US/firefox/addon/unraid-dash/) |
 
-> v1.1.0 has been submitted to the Chrome Web Store and is pending review.
+> v1.1.0 is available on all stores.
 
 ## 📖 Overview
 
@@ -164,7 +164,7 @@ Chrome, Edge, and Firefox (MV3, 142+).
 ### v1.1.0 - 2026-03-08
 
 - AES-256-GCM encrypted API key storage via Web Crypto API, keys are never stored in plaintext
-- Docker container update indicators (orange dot badge when updates are available)
+- Docker container update indicators (orange dot badge when updates are available, requires Docker Auto Update Check enabled in Unraid)
 - Clickable server name linking directly to the Unraid WebGUI
 - Custom display names for Docker containers and VMs
 - Drag-to-reorder dashboard cards in Settings
