@@ -1,5 +1,39 @@
 const browserAPI = (typeof browser !== 'undefined' && browser.runtime) ? browser : chrome;
 
+const getEncryptionKey = async () => {
+
+    const oResult = await new Promise((resolve) => browserAPI.storage.local.get(['_ek'], resolve));
+
+    if (oResult._ek) {
+        return crypto.subtle.importKey('raw', new Uint8Array(oResult._ek), 'AES-GCM', false, ['encrypt', 'decrypt']);
+    }
+
+    const oKey = await crypto.subtle.generateKey({name: 'AES-GCM', length: 256}, true, ['encrypt', 'decrypt']);
+    const aRaw = Array.from(new Uint8Array(await crypto.subtle.exportKey('raw', oKey)));
+    await new Promise((resolve) => browserAPI.storage.local.set({_ek: aRaw}, resolve));
+
+    return oKey;
+};
+
+const encryptValue = async (pKey, pValue) => {
+
+    const aIv = crypto.getRandomValues(new Uint8Array(12));
+    const aData = await crypto.subtle.encrypt({name: 'AES-GCM', iv: aIv}, pKey, new TextEncoder().encode(pValue));
+
+    return {iv: Array.from(aIv), data: Array.from(new Uint8Array(aData))};
+};
+
+const decryptValue = async (pKey, pEncrypted) => {
+
+    const aDecrypted = await crypto.subtle.decrypt(
+        {name: 'AES-GCM', iv: new Uint8Array(pEncrypted.iv)},
+        pKey,
+        new Uint8Array(pEncrypted.data)
+    );
+
+    return new TextDecoder().decode(aDecrypted);
+};
+
 /**
  * @param {string} pUrl       - Base server URL
  * @param {string} pApiKey    - API key for x-api-key header
@@ -69,28 +103,49 @@ const executeGraphQL = async (pUrl, pApiKey, pQuery, pVariables) => {
     return oJson.data;
 };
 
-const getServerByIndex = (pIndex) => {
+const getServersWithKeys = async () => {
 
-    return new Promise((resolve) => {
-
-        browserAPI.storage.local.get(['servers'], (pResult) => {
-
-            const aServers = pResult.servers || [];
-            resolve(aServers[pIndex] || null);
-        });
+    const oLocal = await new Promise((resolve) => {
+        browserAPI.storage.local.get(['servers', 'encryptedKeys'], resolve);
     });
+
+    const aServers = oLocal.servers || [];
+    const oEncKeys = oLocal.encryptedKeys || {};
+    const aIds = Object.keys(oEncKeys);
+
+    if (aIds.length === 0) {
+        return aServers;
+    }
+
+    let oCryptoKey;
+
+    try {
+        oCryptoKey = await getEncryptionKey();
+    } catch (_) {
+        return aServers;
+    }
+
+    const oDecrypted = {};
+
+    for (const sId of aIds) {
+
+        try {
+            oDecrypted[sId] = await decryptValue(oCryptoKey, oEncKeys[sId]);
+        } catch (_) {
+            /* Key corrupted or encryption key changed */
+        }
+    }
+
+    return aServers.map((pS) => ({
+        ...pS,
+        apiKey: oDecrypted[pS.id] || pS.apiKey || null
+    }));
 };
 
-const getServerById = (pServerId) => {
+const getServerById = async (pServerId) => {
 
-    return new Promise((resolve) => {
-
-        browserAPI.storage.local.get(['servers'], (pResult) => {
-
-            const aServers = pResult.servers || [];
-            resolve(aServers.find((pS) => pS.id === pServerId) || null);
-        });
-    });
+    const aServers = await getServersWithKeys();
+    return aServers.find((pS) => pS.id === pServerId) || null;
 };
 
 /* Each dashboard section is a separate query so that an unavailable
@@ -140,6 +195,11 @@ query Docker {
 const QUERY_DOCKER_BASIC = `
 query DockerBasic {
   docker { containers { id names state status autoStart } }
+}`;
+
+const QUERY_DOCKER_UPDATES = `
+query DockerUpdates {
+  docker { containerUpdateStatuses { name updateStatus } }
 }`;
 
 const QUERY_VMS = `
@@ -333,15 +393,11 @@ browserAPI.runtime.onMessage.addListener((pMessage, pSender, pFnSendResponse) =>
 
 const fetchServerDashboard = async (pServer) => {
 
-    /* Try full Docker query first, fall back to basic if schema lacks ports */
     const fnDockerQuery = async () => {
 
         try {
-
             return await executeGraphQL(pServer.url, pServer.apiKey, QUERY_DOCKER);
-
         } catch (_) {
-
             return await executeGraphQL(pServer.url, pServer.apiKey, QUERY_DOCKER_BASIC);
         }
     };
@@ -351,7 +407,8 @@ const fetchServerDashboard = async (pServer) => {
         {key: 'array', query: QUERY_ARRAY},
         {key: 'network', query: QUERY_NETWORK},
         {key: 'docker', query: null},
-        {key: 'vms', query: QUERY_VMS}
+        {key: 'vms', query: QUERY_VMS},
+        {key: 'dockerUpdates', query: QUERY_DOCKER_UPDATES}
     ];
 
     const aResults = await Promise.allSettled(
@@ -371,6 +428,10 @@ const fetchServerDashboard = async (pServer) => {
     aResults.forEach((pResult, pIndex) => {
 
         if (pResult.status === 'fulfilled' && pResult.value) {
+
+            if (aQueries[pIndex].key === 'dockerUpdates') {
+                return;
+            }
 
             Object.assign(oData, pResult.value);
 
@@ -396,6 +457,13 @@ const fetchServerDashboard = async (pServer) => {
         }
     });
 
+    const nUpdateIdx = aQueries.findIndex((pQ) => pQ.key === 'dockerUpdates');
+    const oUpdateResult = aResults[nUpdateIdx];
+
+    if (oUpdateResult?.status === 'fulfilled' && oUpdateResult.value?.docker?.containerUpdateStatuses && oData.docker) {
+        oData.docker.updateStatuses = oUpdateResult.value.docker.containerUpdateStatuses;
+    }
+
     if (!bAnyCoreData) {
 
         const sCoreErr = aResults[0].status === 'rejected'
@@ -410,16 +478,10 @@ const fetchServerDashboard = async (pServer) => {
 
 const handleFetchDashboard = async (pMessage) => {
 
-    let oServer;
+    const oServer = await getServerById(pMessage.serverId);
 
-    if (pMessage.serverId) {
-        oServer = await getServerById(pMessage.serverId);
-    } else {
-        oServer = await getServerByIndex(pMessage.serverIndex || 0);
-    }
-
-    if (!oServer) {
-        return {error: 'NO_SERVER'};
+    if (!oServer || !oServer.apiKey) {
+        return {error: oServer ? 'KEY_MISSING' : 'NO_SERVER'};
     }
 
     let sKeyType = 'admin';
@@ -445,12 +507,7 @@ const handleFetchDashboard = async (pMessage) => {
 
 const handleFetchAllServers = async () => {
 
-    const oResult = await new Promise((resolve) => {
-
-        browserAPI.storage.local.get(['servers'], resolve);
-    });
-
-    const aServers = (oResult.servers || []).filter((pS) => pS.enabled !== false);
+    const aServers = (await getServersWithKeys()).filter((pS) => pS.enabled !== false && pS.apiKey);
 
     if (aServers.length === 0) {
         return {results: []};
@@ -669,33 +726,31 @@ const updateBadge = async () => {
 
     try {
 
-        const oResult = await new Promise((resolve) => {
+        const aServers = (await getServersWithKeys()).filter((pS) => pS.enabled !== false && pS.apiKey);
 
-            browserAPI.storage.local.get(['servers', 'settings'], resolve);
+        const oSettingsResult = await new Promise((resolve) => {
+            browserAPI.storage.local.get(['settings'], resolve);
         });
 
-        const aServers = (oResult.servers || []).filter((pS) => pS.enabled !== false);
-        const oSettings = oResult.settings || {};
+        const oSettings = oSettingsResult.settings || {};
 
         if (aServers.length === 0 || !oSettings.refreshInterval) {
             browserAPI.action.setBadgeText({text: ''});
             return;
         }
 
+        const aResults = await Promise.allSettled(
+            aServers.map((pS) => executeGraphQL(pS.url, pS.apiKey, QUERY_BADGE_COUNT))
+        );
+
         let nTotal = 0;
 
-        for (const oServer of aServers) {
+        aResults.forEach((pR) => {
 
-            try {
-
-                const oData = await executeGraphQL(oServer.url, oServer.apiKey, QUERY_BADGE_COUNT);
-                const nUnread = oData.notifications?.overview?.unread?.total || 0;
-                nTotal += nUnread;
-
-            } catch (_) {
-                /* Skip unreachable servers */
+            if (pR.status === 'fulfilled') {
+                nTotal += pR.value?.notifications?.overview?.unread?.total || 0;
             }
-        }
+        });
 
         if (nTotal > 0) {
             browserAPI.action.setBadgeText({text: String(nTotal)});
@@ -709,9 +764,43 @@ const updateBadge = async () => {
     }
 };
 
-browserAPI.runtime.onInstalled.addListener(() => {
+browserAPI.runtime.onInstalled.addListener(async () => {
 
     browserAPI.alarms.create('badgeUpdate', {periodInMinutes: 5});
+
+    const oResult = await new Promise((resolve) => {
+        browserAPI.storage.local.get(['servers'], resolve);
+    });
+
+    const aServers = oResult.servers || [];
+    const oPlainKeys = {};
+    let bNeedsMigration = false;
+
+    const aCleaned = aServers.map((pS) => {
+
+        if (pS.apiKey) {
+            oPlainKeys[pS.id] = pS.apiKey;
+            bNeedsMigration = true;
+            const {apiKey, ...oRest} = pS;
+            return oRest;
+        }
+
+        return pS;
+    });
+
+    if (bNeedsMigration) {
+
+        const oCryptoKey = await getEncryptionKey();
+        const oEncKeys = {};
+
+        for (const sId of Object.keys(oPlainKeys)) {
+            oEncKeys[sId] = await encryptValue(oCryptoKey, oPlainKeys[sId]);
+        }
+
+        await new Promise((resolve) => {
+            browserAPI.storage.local.set({servers: aCleaned, encryptedKeys: oEncKeys}, resolve);
+        });
+    }
 });
 
 browserAPI.alarms.onAlarm.addListener((pAlarm) => {

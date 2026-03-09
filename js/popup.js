@@ -12,8 +12,12 @@ const runPopupLogic = async () => {
 
     const DEFAULT_SETTINGS = {
         theme: 'light',
+        compactMode: false,
         refreshInterval: 60000,
         activeServerId: null,
+        popupWidth: 420,
+        popupHeight: 0,
+        cardOrder: ['system', 'array', 'docker', 'vms', 'notifications'],
         visibleCards: {
             system: true,
             array: true,
@@ -35,12 +39,13 @@ const runPopupLogic = async () => {
     };
 
     const ERROR_MESSAGES = {
-        AUTH_ERROR: 'Authentication failed. Check your API key.',
-        UNREACHABLE: 'Server is unreachable. Check the URL and network.',
-        TIMEOUT: 'Connection timed out. Server may be busy or offline.',
+        AUTH_ERROR: 'Authentication failed. Check your API key in Settings, then try Refresh.',
+        UNREACHABLE: 'Server is unreachable. Verify the URL is correct and the server is online, then try Refresh.',
+        TIMEOUT: 'Connection timed out. The server may be busy or offline. Try clicking Refresh.',
         NO_SERVER: 'No server configured.',
-        INVALID_CONFIG: 'Invalid server configuration.',
-        PERMISSION_DENIED: 'This API key does not have permission to perform this action.'
+        KEY_MISSING: 'API key is missing. Add one in Settings for this server.',
+        INVALID_CONFIG: 'Invalid server configuration. Edit the server in Settings.',
+        PERMISSION_DENIED: 'This API key does not have permission. Use an admin API key for full control.'
     };
 
     const oSpinner = document.getElementById('spinner');
@@ -50,9 +55,11 @@ const runPopupLogic = async () => {
     const oSettingsPanel = document.getElementById('settingsPanel');
 
     const oThemeToggle = document.getElementById('themeToggle');
+    const oCompactToggle = document.getElementById('compactToggle');
     const oRefreshBtn = document.getElementById('refreshBtn');
     const oSettingsBtn = document.getElementById('settingsBtn');
     const oSettingsBack = document.getElementById('settingsBack');
+    const oResizeHandle = document.getElementById('resizeHandle');
 
     const oAddServerBtn = document.getElementById('addServerBtn');
     const oServerList = document.getElementById('serverList');
@@ -68,11 +75,8 @@ const runPopupLogic = async () => {
     const oSaveServerBtn = document.getElementById('saveServerBtn');
     const oRefreshInterval = document.getElementById('refreshInterval');
 
-    const oVisSystem = document.getElementById('visSystem');
-    const oVisArray = document.getElementById('visArray');
-    const oVisDocker = document.getElementById('visDocker');
-    const oVisVMs = document.getElementById('visVMs');
-    const oVisNotifications = document.getElementById('visNotifications');
+    const oItemNameInput = document.getElementById('itemNameInput');
+    const oUrlSection = document.getElementById('urlSection');
 
     const oCardSystem = document.getElementById('cardSystem');
     const oCardArray = document.getElementById('cardArray');
@@ -110,18 +114,86 @@ const runPopupLogic = async () => {
     let aNotificationItems = [];
     let bNotificationsLoading = false;
     let oDockerUrlOverrides = {};
+    let oItemNameOverrides = {};
     let sUrlOverrideContainerId = null;
+    let sItemModalType = null;
     let sListSettingsCardType = null;
     let sCurrentKeyType = null;
+
+    const getEncryptionKey = async () => {
+
+        const oResult = await new Promise((resolve) => chrome.storage.local.get(['_ek'], resolve));
+
+        if (oResult._ek) {
+            return crypto.subtle.importKey('raw', new Uint8Array(oResult._ek), 'AES-GCM', false, ['encrypt', 'decrypt']);
+        }
+
+        return null;
+    };
+
+    const encryptValue = async (pKey, pValue) => {
+
+        const aIv = crypto.getRandomValues(new Uint8Array(12));
+        const aData = await crypto.subtle.encrypt({name: 'AES-GCM', iv: aIv}, pKey, new TextEncoder().encode(pValue));
+
+        return {iv: Array.from(aIv), data: Array.from(new Uint8Array(aData))};
+    };
+
+    const decryptValue = async (pKey, pEncrypted) => {
+
+        const aDecrypted = await crypto.subtle.decrypt(
+            {name: 'AES-GCM', iv: new Uint8Array(pEncrypted.iv)},
+            pKey,
+            new Uint8Array(pEncrypted.data)
+        );
+
+        return new TextDecoder().decode(aDecrypted);
+    };
 
     const loadStorage = async () => {
 
         const oResult = await new Promise((resolve) => {
-
-            chrome.storage.local.get(['servers', 'settings', 'dockerUrlOverrides'], resolve);
+            chrome.storage.local.get(['servers', 'settings', 'dockerUrlOverrides', 'itemNameOverrides', 'encryptedKeys'], resolve);
         });
 
-        aServers = oResult.servers || [];
+        const oEncKeys = oResult.encryptedKeys || {};
+        const aEncIds = Object.keys(oEncKeys);
+        const oDecrypted = {};
+        let bDecryptionFailed = false;
+
+        if (aEncIds.length > 0) {
+
+            try {
+
+                const oCryptoKey = await getEncryptionKey();
+
+                if (!oCryptoKey) {
+                    bDecryptionFailed = true;
+                } else {
+
+                    for (const sId of aEncIds) {
+
+                        try {
+                            oDecrypted[sId] = await decryptValue(oCryptoKey, oEncKeys[sId]);
+                        } catch (_) {
+                            /* Corrupted entry */
+                        }
+                    }
+
+                    if (Object.keys(oDecrypted).length === 0) {
+                        bDecryptionFailed = true;
+                    }
+                }
+
+            } catch (_) {
+                bDecryptionFailed = true;
+            }
+        }
+
+        aServers = (oResult.servers || []).map((pS) => ({
+            ...pS,
+            apiKey: oDecrypted[pS.id] || pS.apiKey || null
+        }));
         oSettings = {...DEFAULT_SETTINGS, ...oResult.settings};
 
         oSettings.visibleCards = {
@@ -141,25 +213,72 @@ const runPopupLogic = async () => {
         };
 
         oDockerUrlOverrides = oResult.dockerUrlOverrides || {};
+        oItemNameOverrides = oResult.itemNameOverrides || {};
         sActiveServerId = oSettings.activeServerId;
 
         if (aServers.length > 0 && !aServers.find((pS) => pS.id === sActiveServerId)) {
             sActiveServerId = aServers[0].id;
         }
+
+        if (!Array.isArray(oSettings.cardOrder) || oSettings.cardOrder.length === 0) {
+            oSettings.cardOrder = [...DEFAULT_SETTINGS.cardOrder];
+        }
+
+        if (typeof oSettings.compactMode !== 'boolean') {
+            oSettings.compactMode = DEFAULT_SETTINGS.compactMode;
+        }
+
+        if (typeof oSettings.popupWidth !== 'number' || oSettings.popupWidth <= 0) {
+            oSettings.popupWidth = DEFAULT_SETTINGS.popupWidth;
+        }
+
+        if (typeof oSettings.popupHeight !== 'number') {
+            oSettings.popupHeight = DEFAULT_SETTINGS.popupHeight;
+        }
+
+        return bDecryptionFailed;
     };
 
-    const saveStorage = () => {
+    const saveStorage = async () => {
 
-        return new Promise((resolve) => {
+        const oPlainKeys = {};
+        const aCleaned = aServers.map((pS) => {
 
-            chrome.storage.local.set({
-                servers: aServers,
-                settings: {
-                    ...oSettings,
-                    activeServerId: sActiveServerId
-                }
-            }, resolve);
+            if (pS.apiKey) {
+                oPlainKeys[pS.id] = pS.apiKey;
+            }
+
+            const {apiKey, ...oRest} = pS;
+            return oRest;
         });
+
+        const oEncKeys = {};
+        const aIds = Object.keys(oPlainKeys);
+
+        if (aIds.length > 0) {
+
+            let oCryptoKey = await getEncryptionKey();
+
+            if (!oCryptoKey) {
+                const oKey = await crypto.subtle.generateKey({name: 'AES-GCM', length: 256}, true, ['encrypt', 'decrypt']);
+                const aRaw = Array.from(new Uint8Array(await crypto.subtle.exportKey('raw', oKey)));
+                await new Promise((resolve) => chrome.storage.local.set({_ek: aRaw}, resolve));
+                oCryptoKey = oKey;
+            }
+
+            for (const sId of aIds) {
+                oEncKeys[sId] = await encryptValue(oCryptoKey, oPlainKeys[sId]);
+            }
+        }
+
+        return new Promise((resolve) => chrome.storage.local.set({
+            servers: aCleaned,
+            encryptedKeys: oEncKeys,
+            settings: {
+                ...oSettings,
+                activeServerId: sActiveServerId
+            }
+        }, resolve));
     };
 
     const getOverrideKey = (pContainerId) => {
@@ -171,7 +290,10 @@ const runPopupLogic = async () => {
 
         return new Promise((resolve) => {
 
-            chrome.storage.local.set({dockerUrlOverrides: oDockerUrlOverrides}, resolve);
+            chrome.storage.local.set({
+                dockerUrlOverrides: oDockerUrlOverrides,
+                itemNameOverrides: oItemNameOverrides
+            }, resolve);
         });
     };
 
@@ -184,6 +306,63 @@ const runPopupLogic = async () => {
         }
     };
 
+    const applyCompact = () => {
+
+        if (oSettings.compactMode) {
+            document.body.classList.add('ut-compact');
+            oCompactToggle.classList.add('active');
+        } else {
+            document.body.classList.remove('ut-compact');
+            oCompactToggle.classList.remove('active');
+        }
+    };
+
+    const applyPopupDimensions = () => {
+
+        if (oSettings.popupWidth > 0) {
+            document.body.style.width = oSettings.popupWidth + 'px';
+        }
+
+        if (oSettings.popupHeight > 0) {
+            document.body.style.minHeight = oSettings.popupHeight + 'px';
+            document.body.style.maxHeight = oSettings.popupHeight + 'px';
+        }
+    };
+
+    const createSvgIcon = (pHref, pClass) => {
+
+        const oSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        oSvg.setAttribute('class', pClass || 'ut-icon');
+
+        const oUse = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+        oUse.setAttribute('href', pHref);
+        oSvg.appendChild(oUse);
+
+        return oSvg;
+    };
+
+    const el = (pTag, pClass, pText) => {
+
+        const oEl = document.createElement(pTag);
+        if (pClass) oEl.className = pClass;
+        if (pText != null) oEl.textContent = pText;
+        return oEl;
+    };
+
+    const CARD_LABELS = {
+        system: 'System',
+        array: 'Array',
+        docker: 'Docker',
+        vms: 'VMs',
+        notifications: 'Notifications'
+    };
+
+    const getItemDisplayName = (pItemId, pFallbackName) => {
+
+        const sKey = getOverrideKey(pItemId);
+        return oItemNameOverrides[sKey] || pFallbackName;
+    };
+
     const showSpinner = () => {
 
         oSpinner.classList.remove('hidden');
@@ -192,16 +371,13 @@ const runPopupLogic = async () => {
         oDashboard.style.display = 'none';
     };
 
-    /**
-     * Shows a message with trusted HTML. Only use for static templates,
-     * never pass dynamic user/server data.
-     */
-    const showMessageHtml = (pHtml) => {
+    const showMessageEl = (pElement) => {
 
         oSpinner.classList.add('hidden');
         oSpinner.style.display = 'none';
         oDashboard.style.display = 'none';
-        oMessage.innerHTML = pHtml;
+        oMessage.textContent = '';
+        oMessage.appendChild(pElement);
         oMessage.className = 'ut-message';
         oMessage.style.display = 'block';
     };
@@ -243,7 +419,7 @@ const runPopupLogic = async () => {
         }
 
         oServerTabs.style.display = 'flex';
-        oServerTabs.innerHTML = '';
+        oServerTabs.textContent = '';
 
         aEnabled.forEach((pServer) => {
 
@@ -275,29 +451,28 @@ const runPopupLogic = async () => {
         fetchAndRender();
     };
 
-    const fetchAndRender = () => {
+    const fetchAndRender = (pSilent) => {
 
         if (aServers.length === 0) {
 
-            showMessageHtml(
-                '<svg class="ut-message-icon"><use href="#ico-settings"/></svg>' +
-                'No servers configured.<br><a id="openSettingsLink">Open Settings</a> to add your Unraid server.'
-            );
+            const oFrag = document.createDocumentFragment();
+            oFrag.appendChild(createSvgIcon('#ico-settings', 'ut-message-icon'));
+            oFrag.appendChild(document.createTextNode('No servers configured. '));
 
-            const oLink = document.getElementById('openSettingsLink');
+            const oLink = document.createElement('a');
+            oLink.textContent = 'Open Settings';
+            oLink.addEventListener('click', openSettings);
+            oFrag.appendChild(oLink);
 
-            if (oLink) {
-
-                oLink.addEventListener('click', () => {
-
-                    openSettings();
-                });
-            }
+            oFrag.appendChild(document.createTextNode(' to add your Unraid server.'));
+            showMessageEl(oFrag);
 
             return;
         }
 
-        showSpinner();
+        if (!pSilent) {
+            showSpinner();
+        }
 
         chrome.runtime.sendMessage({
             action: 'fetchDashboard',
@@ -318,7 +493,15 @@ const runPopupLogic = async () => {
 
             if (pResponse.error) {
 
-                showMessageText(getErrorMessage(pResponse.error), true);
+                if (pResponse.error === 'KEY_MISSING') {
+                    showMessageText(getErrorMessage(pResponse.error), true);
+                    return;
+                }
+
+                if (!pSilent) {
+                    showMessageText(getErrorMessage(pResponse.error), true);
+                }
+
                 return;
             }
 
@@ -334,21 +517,45 @@ const runPopupLogic = async () => {
             return;
         }
 
+        if (oSettingsPanel.style.display !== 'none') {
+            return;
+        }
+
         showDashboard();
 
         const oVis = oSettings.visibleCards;
+        const oCardMap = {
+            system: oCardSystem,
+            array: oCardArray,
+            docker: oCardDocker,
+            vms: oCardVMs,
+            notifications: oCardNotifications
+        };
+        const oRenderMap = {
+            system: renderSystemCard,
+            array: renderArrayCard,
+            docker: renderDockerCard,
+            vms: renderVMsCard,
+            notifications: renderNotificationsCard
+        };
 
-        oCardSystem.style.display = oVis.system ? '' : 'none';
-        oCardArray.style.display = oVis.array ? '' : 'none';
-        oCardDocker.style.display = oVis.docker ? '' : 'none';
-        oCardVMs.style.display = oVis.vms ? '' : 'none';
-        oCardNotifications.style.display = oVis.notifications ? '' : 'none';
+        const aOrder = oSettings.cardOrder || DEFAULT_SETTINGS.cardOrder;
 
-        if (oVis.system) renderSystemCard();
-        if (oVis.array) renderArrayCard();
-        if (oVis.docker) renderDockerCard();
-        if (oVis.vms) renderVMsCard();
-        if (oVis.notifications) renderNotificationsCard();
+        aOrder.forEach((sKey) => {
+
+            const oCard = oCardMap[sKey];
+
+            if (!oCard) {
+                return;
+            }
+
+            oCard.style.display = oVis[sKey] ? '' : 'none';
+            oDashboard.appendChild(oCard);
+
+            if (oVis[sKey] && oRenderMap[sKey]) {
+                oRenderMap[sKey]();
+            }
+        });
 
         setupCollapsibleCards();
     };
@@ -415,6 +622,32 @@ const runPopupLogic = async () => {
         saveStorage();
     };
 
+    const buildDetailRow = (pLabel, pValue) => {
+
+        const oRow = el('div', 'ut-detail-row');
+        oRow.appendChild(el('span', 'ut-detail-label', pLabel));
+        oRow.appendChild(el('span', 'ut-detail-value', pValue));
+        return oRow;
+    };
+
+    const buildCardHeader = (pIconRef, pTitle, pBadgeText, pRightContent) => {
+
+        const oHeader = el('div', 'ut-card-header');
+
+        const oLeft = el('div', 'ut-card-header-left');
+        oLeft.appendChild(createSvgIcon(pIconRef));
+        oLeft.appendChild(el('span', 'ut-card-title', pTitle));
+        oHeader.appendChild(oLeft);
+
+        if (pRightContent) {
+            oHeader.appendChild(pRightContent);
+        } else if (pBadgeText != null) {
+            oHeader.appendChild(el('span', 'ut-card-badge', pBadgeText));
+        }
+
+        return oHeader;
+    };
+
     const renderSystemCard = () => {
 
         const oVars = oCurrentData.vars || {};
@@ -427,6 +660,8 @@ const runPopupLogic = async () => {
         const aAccessUrls = oCurrentData.network?.accessUrls || [];
         const oNet = aAccessUrls.find((pU) => pU.type === 'LAN') || aAccessUrls[0] || {};
 
+        const oActiveServer = aServers.find((pS) => pS.id === sActiveServerId);
+        const sServerUrl = oActiveServer?.url || '';
         const sVersion = oVars.version || '?';
         const sName = oVars.name || 'Unraid';
         const sUptime = formatUptime(oOS.uptime);
@@ -437,64 +672,66 @@ const runPopupLogic = async () => {
         const nMemUsed = Number(oMemMetrics.used) || 0;
         const nMemPercent = Math.round(oMemMetrics.percentTotal || 0);
 
-        oCardSystem.innerHTML =
-            '<div class="ut-card-header">' +
-                '<div class="ut-card-header-left">' +
-                    '<svg class="ut-icon"><use href="#ico-system"/></svg>' +
-                    '<span class="ut-card-title">System</span>' +
-                '</div>' +
-                '<span class="ut-card-badge">v' + escapeHtml(sVersion) + '</span>' +
-            '</div>' +
-            '<div class="ut-card-body">' +
-                '<div class="ut-detail-row">' +
-                    '<span class="ut-detail-label">Server</span>' +
-                    '<span class="ut-detail-value">' + escapeHtml(sName) + '</span>' +
-                '</div>' +
-                '<div class="ut-detail-row">' +
-                    '<span class="ut-detail-label">Uptime</span>' +
-                    '<span class="ut-detail-value">' + escapeHtml(sUptime) + '</span>' +
-                '</div>' +
-                '<div class="ut-detail-row">' +
-                    '<span class="ut-detail-label">CPU</span>' +
-                    '<span class="ut-detail-value">' + escapeHtml(sCPUBrand) + '</span>' +
-                '</div>' +
-                '<div class="ut-detail-row">' +
-                    '<span class="ut-detail-label">Cores</span>' +
-                    '<span class="ut-detail-value">' + (oCPU.cores || '?') + 'C / ' + (oCPU.threads || '?') + 'T</span>' +
-                '</div>' +
-                '<div class="ut-detail-row">' +
-                    '<span class="ut-detail-label">Memory</span>' +
-                    '<span class="ut-detail-value">' + formatBytes(nMemTotal) + '</span>' +
-                '</div>' +
-                (oNet.ipv4 ? '<div class="ut-detail-row">' +
-                    '<span class="ut-detail-label">Network</span>' +
-                    '<span class="ut-detail-value">' + escapeHtml(oNet.ipv4) + '</span>' +
-                '</div>' : '') +
-                '<div style="margin-top:8px;">' +
-                    renderProgressBar('CPU', nCPUPercent) +
-                    renderProgressBar('RAM', nMemPercent,
-                        formatBytes(nMemUsed) + ' / ' + formatBytes(nMemTotal)) +
-                '</div>' +
-            '</div>';
+        oCardSystem.textContent = '';
+        oCardSystem.appendChild(buildCardHeader('#ico-system', 'System', 'v' + sVersion));
+
+        const oBody = el('div', 'ut-card-body');
+
+        const oServerRow = el('div', 'ut-detail-row');
+        oServerRow.appendChild(el('span', 'ut-detail-label', 'Server'));
+        const oServerVal = el('span', 'ut-detail-value');
+
+        if (sServerUrl) {
+
+            const oLink = document.createElement('a');
+            oLink.className = 'ut-server-link';
+            oLink.href = sServerUrl;
+            oLink.target = '_blank';
+            oLink.rel = 'noopener';
+            oLink.textContent = sName + ' ';
+            oLink.appendChild(createSvgIcon('#ico-external', 'ut-icon ut-server-link-icon'));
+            oServerVal.appendChild(oLink);
+
+        } else {
+            oServerVal.textContent = sName;
+        }
+
+        oServerRow.appendChild(oServerVal);
+        oBody.appendChild(oServerRow);
+
+        oBody.appendChild(buildDetailRow('Uptime', sUptime));
+        oBody.appendChild(buildDetailRow('CPU', sCPUBrand));
+        oBody.appendChild(buildDetailRow('Cores', (oCPU.cores || '?') + 'C / ' + (oCPU.threads || '?') + 'T'));
+        oBody.appendChild(buildDetailRow('Memory', formatBytes(nMemTotal)));
+
+        if (oNet.ipv4) {
+            oBody.appendChild(buildDetailRow('Network', oNet.ipv4));
+        }
+
+        const oMetricsDiv = document.createElement('div');
+        oMetricsDiv.style.marginTop = '8px';
+        oMetricsDiv.appendChild(renderProgressBar('CPU', nCPUPercent));
+        oMetricsDiv.appendChild(renderProgressBar('RAM', nMemPercent,
+            formatBytes(nMemUsed) + ' / ' + formatBytes(nMemTotal)));
+        oBody.appendChild(oMetricsDiv);
+
+        oCardSystem.appendChild(oBody);
     };
 
     const renderArrayCard = () => {
 
         const bArrayAvailable = oCurrentData.array !== null && oCurrentData.array !== undefined;
 
+        oCardArray.textContent = '';
+
         if (!bArrayAvailable) {
 
-            oCardArray.innerHTML =
-                '<div class="ut-card-header">' +
-                    '<div class="ut-card-header-left">' +
-                        '<svg class="ut-icon"><use href="#ico-array"/></svg>' +
-                        '<span class="ut-card-title">Array</span>' +
-                    '</div>' +
-                    '<span class="ut-card-badge">unavailable</span>' +
-                '</div>' +
-                '<div class="ut-card-body">' +
-                    '<div class="ut-detail-row"><span class="ut-detail-label">Array data not available on this server</span></div>' +
-                '</div>';
+            oCardArray.appendChild(buildCardHeader('#ico-array', 'Array', 'unavailable'));
+            const oBody = el('div', 'ut-card-body');
+            oBody.appendChild(el('div', 'ut-detail-row')).appendChild(
+                el('span', 'ut-detail-label', 'Array data not available on this server')
+            );
+            oCardArray.appendChild(oBody);
             return;
         }
 
@@ -519,40 +756,50 @@ const runPopupLogic = async () => {
             sStateClass = sState === 'STOPPED' ? 'stopped' : 'warning';
         }
 
-        oCardArray.innerHTML =
-            '<div class="ut-card-header">' +
-                '<div class="ut-card-header-left">' +
-                    '<svg class="ut-icon"><use href="#ico-array"/></svg>' +
-                    '<span class="ut-card-title">Array</span>' +
-                '</div>' +
-                '<span class="ut-card-badge">' +
-                    '<span class="ut-status-dot ut-status-dot--' + sStateClass + '"></span>' +
-                    escapeHtml(sState) +
-                '</span>' +
-            '</div>' +
-            '<div class="ut-card-body">' +
-                (nTotalKB > 0 ?
-                    '<div class="ut-detail-row">' +
-                        '<span class="ut-detail-label">Capacity</span>' +
-                        '<span class="ut-detail-value">' +
-                            formatBytes(nUsedKB * 1024) + ' / ' + formatBytes(nTotalKB * 1024) +
-                        '</span>' +
-                    '</div>' +
-                    renderProgressBar('Used', nPercent) : '') +
-                '<div class="ut-detail-row" style="margin-top:4px;">' +
-                    '<span class="ut-detail-label">Disks</span>' +
-                    '<span class="ut-detail-value">' + nDiskOk + ' active' +
-                        (nDiskErrors > 0 ? ', <span style="color:var(--ut-status-error)">' + nDiskErrors + ' with errors</span>' : '') +
-                    '</span>' +
-                '</div>' +
-                '<div class="ut-detail-row">' +
-                    '<span class="ut-detail-label">Parity</span>' +
-                    '<span class="ut-detail-value">' + nParityOk + ' active</span>' +
-                '</div>' +
-                renderDiskSection('Parity', aParities) +
-                renderDiskSection('Disks', aDisks) +
-                renderDiskSection('Cache', aCaches) +
-            '</div>';
+        const oBadge = el('span', 'ut-card-badge');
+        const oDot = el('span', 'ut-status-dot ut-status-dot--' + sStateClass);
+        oBadge.appendChild(oDot);
+        oBadge.appendChild(document.createTextNode(sState));
+
+        oCardArray.appendChild(buildCardHeader('#ico-array', 'Array', null, oBadge));
+
+        const oBody = el('div', 'ut-card-body');
+
+        if (nTotalKB > 0) {
+            oBody.appendChild(buildDetailRow('Capacity',
+                formatBytes(nUsedKB * 1024) + ' / ' + formatBytes(nTotalKB * 1024)));
+            oBody.appendChild(renderProgressBar('Used', nPercent));
+        }
+
+        const oDiskRow = el('div', 'ut-detail-row');
+        oDiskRow.style.marginTop = '4px';
+        oDiskRow.appendChild(el('span', 'ut-detail-label', 'Disks'));
+        const oDiskVal = el('span', 'ut-detail-value');
+        oDiskVal.textContent = nDiskOk + ' active';
+
+        if (nDiskErrors > 0) {
+            oDiskVal.appendChild(document.createTextNode(', '));
+            const oErrSpan = document.createElement('span');
+            oErrSpan.style.color = 'var(--ut-status-error)';
+            oErrSpan.textContent = nDiskErrors + ' with errors';
+            oDiskVal.appendChild(oErrSpan);
+        }
+
+        oDiskRow.appendChild(oDiskVal);
+        oBody.appendChild(oDiskRow);
+
+        oBody.appendChild(buildDetailRow('Parity', nParityOk + ' active'));
+
+        const oParitySection = renderDiskSection('Parity', aParities);
+        if (oParitySection) oBody.appendChild(oParitySection);
+
+        const oDiskSection = renderDiskSection('Disks', aDisks);
+        if (oDiskSection) oBody.appendChild(oDiskSection);
+
+        const oCacheSection = renderDiskSection('Cache', aCaches);
+        if (oCacheSection) oBody.appendChild(oCacheSection);
+
+        oCardArray.appendChild(oBody);
     };
 
     const renderDiskSection = (pTitle, pDisks) => {
@@ -560,41 +807,45 @@ const runPopupLogic = async () => {
         const aActive = pDisks.filter((pD) => pD.status && pD.status !== 'DISK_NP');
 
         if (aActive.length === 0) {
-            return '';
+            return null;
         }
 
-        let sHtml = '<div class="ut-disk-section">' +
-            '<div class="ut-disk-section-title">' + escapeHtml(pTitle) + '</div>' +
-            '<div class="ut-disk-grid">';
+        const oSection = el('div', 'ut-disk-section');
+        oSection.appendChild(el('div', 'ut-disk-section-title', pTitle));
+
+        const oGrid = el('div', 'ut-disk-grid');
 
         aActive.forEach((pDisk) => {
 
             const sStatus = getDiskStatusClass(pDisk);
             const sName = pDisk.name || '?';
 
-            let sTempHtml = '';
-            let sTooltip = pDisk.temp != null ? escapeHtml(pDisk.temp) + '°C' : '';
+            let sTooltip = pDisk.temp != null ? pDisk.temp + '\u00B0C' : '';
 
-            if (pDisk.temp != null) {
-                sTempHtml = '<span class="ut-disk-chip-temp">' + escapeHtml(pDisk.temp) + '°C</span>';
-            } else if (pDisk.isSpinning === false) {
+            if (pDisk.temp == null && pDisk.isSpinning === false) {
                 sTooltip = 'Standby';
             }
 
             if (pDisk.numErrors > 0) {
-                sTooltip += (sTooltip ? ' · ' : '') + pDisk.numErrors + ' error' + (pDisk.numErrors !== 1 ? 's' : '');
+                sTooltip += (sTooltip ? ' \u00B7 ' : '') + pDisk.numErrors + ' error' + (pDisk.numErrors !== 1 ? 's' : '');
             }
 
-            sHtml += '<span class="ut-disk-chip"' +
-                (sTooltip ? ' data-tooltip="' + sTooltip + '"' : '') + '>' +
-                '<span class="ut-status-dot ut-status-dot--' + sStatus + '"></span>' +
-                escapeHtml(sName) + sTempHtml +
-                '</span>';
+            const oChip = el('span', 'ut-disk-chip');
+            if (sTooltip) oChip.dataset.tooltip = sTooltip;
+
+            oChip.appendChild(el('span', 'ut-status-dot ut-status-dot--' + sStatus));
+            oChip.appendChild(document.createTextNode(sName));
+
+            if (pDisk.temp != null) {
+                oChip.appendChild(el('span', 'ut-disk-chip-temp', pDisk.temp + '\u00B0C'));
+            }
+
+            oGrid.appendChild(oChip);
         });
 
-        sHtml += '</div></div>';
+        oSection.appendChild(oGrid);
 
-        return sHtml;
+        return oSection;
     };
 
     const getDiskStatusClass = (pDisk) => {
@@ -733,7 +984,7 @@ const runPopupLogic = async () => {
         const oItemMap = new Map();
         aItems.forEach((pI) => oItemMap.set(pI.id, pI));
 
-        oListSettingsCustomList.innerHTML = '';
+        oListSettingsCustomList.textContent = '';
 
         aOrdered.forEach((pId) => {
 
@@ -745,14 +996,16 @@ const runPopupLogic = async () => {
             const bRunning = oItem.state === 'RUNNING';
             const sStatusClass = bRunning ? 'running' : (oItem.state === 'PAUSED' ? 'paused' : 'stopped');
 
-            const oRow = document.createElement('div');
-            oRow.className = 'ut-drag-row';
+            const oRow = el('div', 'ut-drag-row');
             oRow.draggable = true;
             oRow.dataset.id = pId;
-            oRow.innerHTML =
-                '<span class="ut-drag-handle"><svg class="ut-icon"><use href="#ico-drag"/></svg></span>' +
-                '<span class="ut-status-dot ut-status-dot--' + sStatusClass + '"></span>' +
-                '<span class="ut-drag-name">' + escapeHtml(sName) + '</span>';
+
+            const oHandle = el('span', 'ut-drag-handle');
+            oHandle.appendChild(createSvgIcon('#ico-drag'));
+            oRow.appendChild(oHandle);
+
+            oRow.appendChild(el('span', 'ut-status-dot ut-status-dot--' + sStatusClass));
+            oRow.appendChild(el('span', 'ut-drag-name', sName));
 
             oListSettingsCustomList.appendChild(oRow);
         });
@@ -870,58 +1123,78 @@ const runPopupLogic = async () => {
         const aSorted = sortListItems(aContainers, 'docker', getContainerName);
         const nMaxVisible = getVisibleCount('docker', aSorted.length);
         const nVisible = bDockerExpanded ? aSorted.length : Math.min(aSorted.length, nMaxVisible);
-
-        let sRows = '';
-
-        for (let i = 0; i < nVisible; i++) {
-            sRows += renderContainerRow(aSorted[i]);
-        }
-
         const bShowMore = aSorted.length > nMaxVisible;
 
-        let sBody;
+        const aUpdateStatuses = oCurrentData.docker?.updateStatuses || [];
+        const oUpdateMap = {};
 
-        if (!bDockerAvailable) {
-            sBody = '<div class="ut-detail-row"><span class="ut-detail-label">Docker service not enabled on this server</span></div>';
-        } else if (nTotal === 0) {
-            sBody = '<div class="ut-detail-row"><span class="ut-detail-label">No containers found</span></div>';
-        } else {
-            sBody = sRows +
-                (bShowMore ? '<button class="ut-show-more" data-target="docker">' +
-                    (bDockerExpanded ? 'Show less' : 'Show all ' + nTotal + '...') +
-                '</button>' : '');
+        aUpdateStatuses.forEach((pS) => {
+            oUpdateMap[pS.name] = pS.updateStatus;
+        });
+
+        const nUpdatable = aUpdateStatuses.filter((pS) => pS.updateStatus === 'UPDATE_AVAILABLE' || pS.updateStatus === 'REBUILD_READY').length;
+
+        const sBadgeText = bDockerAvailable
+            ? nRunning + ' running / ' + nTotal + ' total' + (nUpdatable > 0 ? ' / ' + nUpdatable + ' update' + (nUpdatable > 1 ? 's' : '') : '')
+            : 'unavailable';
+
+        const oRight = el('div', 'ut-card-header-right');
+        oRight.appendChild(el('span', 'ut-card-badge', sBadgeText));
+
+        if (bDockerAvailable && nTotal > 0) {
+
+            const oGear = el('button', 'ut-card-gear');
+            oGear.dataset.action = 'openListSettings';
+            oGear.dataset.cardType = 'docker';
+            oGear.title = 'List settings';
+            oGear.appendChild(createSvgIcon('#ico-settings'));
+            oRight.appendChild(oGear);
         }
 
-        const sDockerGear = (bDockerAvailable && nTotal > 0)
-            ? '<button class="ut-card-gear" data-action="openListSettings" data-card-type="docker" title="List settings">' +
-                '<svg class="ut-icon"><use href="#ico-settings"/></svg>' +
-              '</button>'
-            : '';
+        oCardDocker.textContent = '';
+        oCardDocker.appendChild(buildCardHeader('#ico-docker', 'Docker', null, oRight));
 
-        oCardDocker.innerHTML =
-            '<div class="ut-card-header">' +
-                '<div class="ut-card-header-left">' +
-                    '<svg class="ut-icon"><use href="#ico-docker"/></svg>' +
-                    '<span class="ut-card-title">Docker</span>' +
-                '</div>' +
-                '<div class="ut-card-header-right">' +
-                    '<span class="ut-card-badge">' +
-                        (bDockerAvailable ? nRunning + ' running / ' + nTotal + ' total' : 'unavailable') +
-                    '</span>' +
-                    sDockerGear +
-                '</div>' +
-            '</div>' +
-            '<div class="ut-card-body">' + sBody + '</div>';
+        const oBody = el('div', 'ut-card-body');
+        oCardDocker.appendChild(oBody);
 
-        const oShowMore = oCardDocker.querySelector('.ut-show-more');
+        if (!bDockerAvailable) {
 
-        if (oShowMore) {
+            oBody.appendChild(el('div', 'ut-detail-row')).appendChild(
+                el('span', 'ut-detail-label', 'Docker service not enabled on this server')
+            );
 
-            oShowMore.addEventListener('click', () => {
+        } else if (nTotal === 0) {
 
-                bDockerExpanded = !bDockerExpanded;
-                renderDockerCard();
-            });
+            oBody.appendChild(el('div', 'ut-detail-row')).appendChild(
+                el('span', 'ut-detail-label', 'No containers found')
+            );
+
+        } else {
+
+            const oFrag = document.createDocumentFragment();
+
+            for (let i = 0; i < nVisible; i++) {
+                oFrag.appendChild(renderContainerRow(aSorted[i], oUpdateMap));
+            }
+
+            oBody.appendChild(oFrag);
+
+            if (bShowMore) {
+
+                const oShowMoreBtn = document.createElement('button');
+                oShowMoreBtn.className = 'ut-show-more';
+                oShowMoreBtn.dataset.target = 'docker';
+                oShowMoreBtn.textContent = bDockerExpanded ? 'Show less' : 'Show all ' + nTotal + '...';
+
+                oShowMoreBtn.addEventListener('click', () => {
+
+                    bDockerExpanded = !bDockerExpanded;
+                    renderDockerCard();
+                    setupCollapsibleCards();
+                });
+
+                oBody.appendChild(oShowMoreBtn);
+            }
         }
 
         if (bDockerAvailable) {
@@ -989,41 +1262,87 @@ const runPopupLogic = async () => {
         return getAutoDetectedUrl(pContainer);
     };
 
-    const renderContainerRow = (pContainer) => {
+    const renderContainerRow = (pContainer, pUpdateMap) => {
 
-        const sName = getContainerName(pContainer);
+        const sOriginalName = getContainerName(pContainer);
+        const sName = getItemDisplayName(pContainer.id, sOriginalName);
         const bRunning = pContainer.state === 'RUNNING';
         const sStatusClass = bRunning ? 'running' : (pContainer.state === 'PAUSED' ? 'paused' : 'stopped');
-        const sActionIcon = bRunning ? '#ico-stop' : '#ico-play';
-        const sActionTitle = bRunning ? 'Stop' : 'Start';
         const sCommand = bRunning ? 'stop' : 'start';
         const sWebUi = getContainerUrl(pContainer);
-        const bHasOverride = !!oDockerUrlOverrides[getOverrideKey(pContainer.id)];
+        const bHasUrlOverride = !!oDockerUrlOverrides[getOverrideKey(pContainer.id)];
+        const bHasNameOverride = !!oItemNameOverrides[getOverrideKey(pContainer.id)];
+        const bGearActive = bHasUrlOverride || bHasNameOverride;
+        const sUpdateStatus = pUpdateMap ? pUpdateMap[sOriginalName] : null;
+        const bHasUpdate = sUpdateStatus === 'UPDATE_AVAILABLE' || sUpdateStatus === 'REBUILD_READY';
 
-        const sNameHtml = sWebUi
-            ? '<a class="ut-item-link" href="' + escapeHtml(sWebUi) + '" target="_blank" rel="noopener">' + escapeHtml(sName) + '</a>'
-            : '<span>' + escapeHtml(sName) + '</span>';
+        const oRow = document.createElement('div');
+        oRow.className = 'ut-item-row';
 
-        const sGearClass = 'ut-item-action' + (bHasOverride ? ' ut-item-action-url--active' : '');
+        const oNameDiv = document.createElement('div');
+        oNameDiv.className = 'ut-item-name';
 
-        return '<div class="ut-item-row">' +
-            '<div class="ut-item-name">' +
-                '<span class="ut-status-dot ut-status-dot--' + sStatusClass + '"></span>' +
-                sNameHtml +
-            '</div>' +
-            '<div class="ut-item-actions">' +
-                '<button class="' + sGearClass + '" title="URL override" ' +
-                    'data-action="openUrlOverride" data-id="' + escapeHtml(pContainer.id) + '">' +
-                    '<svg class="ut-icon"><use href="#ico-settings"/></svg>' +
-                '</button>' +
-                '<button class="ut-item-action"' +
-                    (sCurrentKeyType === 'readonly' ? ' disabled title="View-only API key"' : ' title="' + sActionTitle + '"') +
-                    ' data-action="controlDocker" data-id="' + escapeHtml(pContainer.id) + '"' +
-                    ' data-command="' + sCommand + '">' +
-                    '<svg class="ut-icon"><use href="' + sActionIcon + '"/></svg>' +
-                '</button>' +
-            '</div>' +
-        '</div>';
+        const oDot = document.createElement('span');
+        oDot.className = 'ut-status-dot ut-status-dot--' + sStatusClass;
+        oNameDiv.appendChild(oDot);
+
+        if (sWebUi) {
+
+            const oLink = document.createElement('a');
+            oLink.className = 'ut-item-link';
+            oLink.href = sWebUi;
+            oLink.target = '_blank';
+            oLink.rel = 'noopener';
+            oLink.textContent = sName;
+            oNameDiv.appendChild(oLink);
+
+        } else {
+
+            const oSpan = document.createElement('span');
+            oSpan.textContent = sName;
+            oNameDiv.appendChild(oSpan);
+        }
+
+        if (bHasUpdate) {
+
+            const oBadge = document.createElement('span');
+            oBadge.className = 'ut-update-badge';
+            oBadge.title = 'Update available';
+            oNameDiv.appendChild(oBadge);
+        }
+
+        oRow.appendChild(oNameDiv);
+
+        const oActions = document.createElement('div');
+        oActions.className = 'ut-item-actions';
+
+        const oGearBtn = document.createElement('button');
+        oGearBtn.className = 'ut-item-action' + (bGearActive ? ' ut-item-action-url--active' : '');
+        oGearBtn.title = 'Container settings';
+        oGearBtn.dataset.action = 'openUrlOverride';
+        oGearBtn.dataset.id = pContainer.id;
+        oGearBtn.appendChild(createSvgIcon('#ico-settings'));
+        oActions.appendChild(oGearBtn);
+
+        const oActionBtn = document.createElement('button');
+        oActionBtn.className = 'ut-item-action';
+        oActionBtn.dataset.action = 'controlDocker';
+        oActionBtn.dataset.id = pContainer.id;
+        oActionBtn.dataset.command = sCommand;
+
+        if (sCurrentKeyType === 'readonly') {
+            oActionBtn.disabled = true;
+            oActionBtn.title = 'View-only API key';
+        } else {
+            oActionBtn.title = bRunning ? 'Stop' : 'Start';
+        }
+
+        oActionBtn.appendChild(createSvgIcon(bRunning ? '#ico-stop' : '#ico-play'));
+        oActions.appendChild(oActionBtn);
+
+        oRow.appendChild(oActions);
+
+        return oRow;
     };
 
     const bindContainerActions = (pContainer) => {
@@ -1045,13 +1364,18 @@ const runPopupLogic = async () => {
                     command: pBtn.dataset.command
                 }, (pResponse) => {
 
+                    if (chrome.runtime.lastError) {
+                        pBtn.disabled = false;
+                        return;
+                    }
+
                     if (pResponse?.error === 'PERMISSION_DENIED') {
                         sCurrentKeyType = 'readonly';
                         renderDashboard();
                         return;
                     }
 
-                    setTimeout(fetchAndRender, 1500);
+                    setTimeout(() => fetchAndRender(true), 1500);
                 });
             });
         });
@@ -1060,28 +1384,46 @@ const runPopupLogic = async () => {
 
             pBtn.addEventListener('click', () => {
 
-                openUrlOverrideModal(pBtn.dataset.id);
+                openUrlOverrideModal(pBtn.dataset.id, 'docker');
             });
         });
     };
 
-    const openUrlOverrideModal = (pContainerId) => {
+    const openUrlOverrideModal = (pItemId, pType) => {
 
-        sUrlOverrideContainerId = pContainerId;
+        sUrlOverrideContainerId = pItemId;
+        sItemModalType = pType || 'docker';
 
-        const aContainers = oCurrentData?.docker?.containers || [];
-        const oContainer = aContainers.find((pC) => pC.id === pContainerId);
-        const sName = oContainer ? getContainerName(oContainer) : pContainerId.substring(0, 12);
-        const sDetected = oContainer ? getAutoDetectedUrl(oContainer) : '';
-        const sKey = getOverrideKey(pContainerId);
-        const sOverride = oDockerUrlOverrides[sKey] || '';
+        const sKey = getOverrideKey(pItemId);
+        const sNameOverride = oItemNameOverrides[sKey] || '';
+        let sOriginalName = pItemId.substring(0, 12);
 
-        oUrlModalName.textContent = sName;
-        oUrlModalDetected.textContent = sDetected || 'No URL detected';
-        oUrlModalCheckbox.checked = !!sOverride;
-        oUrlModalInput.value = sOverride;
-        oUrlModalInput.disabled = !sOverride;
-        oUrlModalInput.classList.remove('ut-input--error');
+        if (sItemModalType === 'docker') {
+
+            const aContainers = oCurrentData?.docker?.containers || [];
+            const oContainer = aContainers.find((pC) => pC.id === pItemId);
+            sOriginalName = oContainer ? getContainerName(oContainer) : sOriginalName;
+            const sDetected = oContainer ? getAutoDetectedUrl(oContainer) : '';
+            const sOverride = oDockerUrlOverrides[sKey] || '';
+
+            oUrlModalDetected.textContent = sDetected || 'No URL detected';
+            oUrlModalCheckbox.checked = !!sOverride;
+            oUrlModalInput.value = sOverride;
+            oUrlModalInput.disabled = !sOverride;
+            oUrlModalInput.classList.remove('ut-input--error');
+            oUrlSection.style.display = '';
+
+        } else {
+
+            const aVMs = oCurrentData?.vms?.domains || [];
+            const oVM = aVMs.find((pV) => pV.id === pItemId);
+            sOriginalName = oVM ? (oVM.name || oVM.id || '?') : sOriginalName;
+            oUrlSection.style.display = 'none';
+        }
+
+        oUrlModalName.textContent = sOriginalName;
+        oItemNameInput.value = sNameOverride;
+        oItemNameInput.placeholder = sOriginalName;
 
         oUrlModalBackdrop.style.display = 'flex';
     };
@@ -1090,6 +1432,7 @@ const runPopupLogic = async () => {
 
         oUrlModalBackdrop.style.display = 'none';
         sUrlOverrideContainerId = null;
+        sItemModalType = null;
     };
 
     const saveUrlOverride = async () => {
@@ -1100,28 +1443,49 @@ const runPopupLogic = async () => {
 
         const sKey = getOverrideKey(sUrlOverrideContainerId);
 
-        if (oUrlModalCheckbox.checked) {
+        const sCustomName = oItemNameInput.value.trim();
 
-            const sUrl = oUrlModalInput.value.trim();
-
-            try {
-                new URL(sUrl);
-            } catch (_) {
-                oUrlModalInput.classList.add('ut-input--error');
-                setTimeout(() => oUrlModalInput.classList.remove('ut-input--error'), 600);
-                return;
-            }
-
-            oDockerUrlOverrides[sKey] = sUrl;
-
+        if (sCustomName) {
+            oItemNameOverrides[sKey] = sCustomName;
         } else {
-
-            delete oDockerUrlOverrides[sKey];
+            delete oItemNameOverrides[sKey];
         }
 
+        if (sItemModalType === 'docker') {
+
+            if (oUrlModalCheckbox.checked) {
+
+                const sUrl = oUrlModalInput.value.trim();
+
+                try {
+                    new URL(sUrl);
+                } catch (_) {
+                    oUrlModalInput.classList.add('ut-input--error');
+                    setTimeout(() => oUrlModalInput.classList.remove('ut-input--error'), 600);
+                    return;
+                }
+
+                oDockerUrlOverrides[sKey] = sUrl;
+
+            } else {
+
+                delete oDockerUrlOverrides[sKey];
+            }
+        }
+
+        const sType = sItemModalType;
         await saveOverrides();
         closeUrlOverrideModal();
-        renderDockerCard();
+
+        if (sType === 'docker') {
+            renderDockerCard();
+        }
+
+        if (sType === 'vm') {
+            renderVMsCard();
+        }
+
+        setupCollapsibleCards();
     };
 
     const renderVMsCard = () => {
@@ -1134,61 +1498,74 @@ const runPopupLogic = async () => {
         const aSorted = sortListItems(aVMs, 'vms', getVMName);
         const nMaxVisible = getVisibleCount('vms', aSorted.length);
         const nVisible = bVMsExpanded ? aSorted.length : Math.min(aSorted.length, nMaxVisible);
-
-        let sRows = '';
-
-        for (let i = 0; i < nVisible; i++) {
-            sRows += renderVMRow(aSorted[i]);
-        }
-
         const bShowMore = aSorted.length > nMaxVisible;
 
-        let sBody;
+        const sVMBadge = bVMsAvailable
+            ? nRunning + ' running / ' + nTotal + ' total'
+            : 'unavailable';
+
+        const oVMRight = el('div', 'ut-card-header-right');
+        oVMRight.appendChild(el('span', 'ut-card-badge', sVMBadge));
+
+        if (bVMsAvailable && nTotal > 0) {
+
+            const oGear = el('button', 'ut-card-gear');
+            oGear.dataset.action = 'openListSettings';
+            oGear.dataset.cardType = 'vms';
+            oGear.title = 'List settings';
+            oGear.appendChild(createSvgIcon('#ico-settings'));
+            oVMRight.appendChild(oGear);
+        }
+
+        oCardVMs.textContent = '';
+        oCardVMs.appendChild(buildCardHeader('#ico-vm', 'VMs', null, oVMRight));
+
+        const oBody = el('div', 'ut-card-body');
+        oCardVMs.appendChild(oBody);
 
         if (!bVMsAvailable) {
-            sBody = '<div class="ut-detail-row"><span class="ut-detail-label">VM service not enabled on this server</span></div>';
+
+            oBody.appendChild(el('div', 'ut-detail-row')).appendChild(
+                el('span', 'ut-detail-label', 'VM service not enabled on this server')
+            );
+
         } else if (nTotal === 0) {
-            sBody = '<div class="ut-detail-row"><span class="ut-detail-label">No VMs found</span></div>';
+
+            oBody.appendChild(el('div', 'ut-detail-row')).appendChild(
+                el('span', 'ut-detail-label', 'No VMs found')
+            );
+
         } else {
-            sBody = sRows +
-                (bShowMore ? '<button class="ut-show-more" data-target="vms">' +
-                    (bVMsExpanded ? 'Show less' : 'Show all ' + nTotal + '...') +
-                '</button>' : '');
+
+            const oFrag = document.createDocumentFragment();
+
+            for (let i = 0; i < nVisible; i++) {
+                oFrag.appendChild(renderVMRow(aSorted[i]));
+            }
+
+            oBody.appendChild(oFrag);
+
+            if (bShowMore) {
+
+                const oShowMoreBtn = document.createElement('button');
+                oShowMoreBtn.className = 'ut-show-more';
+                oShowMoreBtn.dataset.target = 'vms';
+                oShowMoreBtn.textContent = bVMsExpanded ? 'Show less' : 'Show all ' + nTotal + '...';
+
+                oShowMoreBtn.addEventListener('click', () => {
+
+                    bVMsExpanded = !bVMsExpanded;
+                    renderVMsCard();
+                    setupCollapsibleCards();
+                });
+
+                oBody.appendChild(oShowMoreBtn);
+            }
         }
 
-        const sVMGear = (bVMsAvailable && nTotal > 0)
-            ? '<button class="ut-card-gear" data-action="openListSettings" data-card-type="vms" title="List settings">' +
-                '<svg class="ut-icon"><use href="#ico-settings"/></svg>' +
-              '</button>'
-            : '';
-
-        oCardVMs.innerHTML =
-            '<div class="ut-card-header">' +
-                '<div class="ut-card-header-left">' +
-                    '<svg class="ut-icon"><use href="#ico-vm"/></svg>' +
-                    '<span class="ut-card-title">VMs</span>' +
-                '</div>' +
-                '<div class="ut-card-header-right">' +
-                    '<span class="ut-card-badge">' +
-                        (bVMsAvailable ? nRunning + ' running / ' + nTotal + ' total' : 'unavailable') +
-                    '</span>' +
-                    sVMGear +
-                '</div>' +
-            '</div>' +
-            '<div class="ut-card-body">' + sBody + '</div>';
-
-        const oShowMore = oCardVMs.querySelector('.ut-show-more');
-
-        if (oShowMore) {
-
-            oShowMore.addEventListener('click', () => {
-
-                bVMsExpanded = !bVMsExpanded;
-                renderVMsCard();
-            });
+        if (bVMsAvailable) {
+            bindVMActions(oCardVMs);
         }
-
-        bindVMActions(oCardVMs);
 
         const oVMGearBtn = oCardVMs.querySelector('[data-action="openListSettings"]');
 
@@ -1204,28 +1581,70 @@ const runPopupLogic = async () => {
 
     const renderVMRow = (pVM) => {
 
-        const sName = pVM.name || pVM.id || '?';
+        const sOriginalName = pVM.name || pVM.id || '?';
+        const sName = getItemDisplayName(pVM.id, sOriginalName);
         const bRunning = pVM.state === 'RUNNING';
         const sStatusClass = bRunning ? 'running' : (pVM.state === 'PAUSED' ? 'paused' : 'stopped');
-        const sActionIcon = bRunning ? '#ico-stop' : '#ico-play';
-        const sActionTitle = bRunning ? 'Stop' : 'Start';
         const sCommand = bRunning ? 'stop' : 'start';
+        const bHasNameOverride = !!oItemNameOverrides[getOverrideKey(pVM.id)];
 
-        return '<div class="ut-item-row">' +
-            '<div class="ut-item-name">' +
-                '<span class="ut-status-dot ut-status-dot--' + sStatusClass + '"></span>' +
-                '<span>' + escapeHtml(sName) + '</span>' +
-            '</div>' +
-            '<button class="ut-item-action"' +
-                (sCurrentKeyType === 'readonly' ? ' disabled title="View-only API key"' : ' title="' + sActionTitle + '"') +
-                ' data-action="controlVM" data-id="' + escapeHtml(pVM.id) + '"' +
-                ' data-command="' + sCommand + '">' +
-                '<svg class="ut-icon"><use href="' + sActionIcon + '"/></svg>' +
-            '</button>' +
-        '</div>';
+        const oRow = document.createElement('div');
+        oRow.className = 'ut-item-row';
+
+        const oNameDiv = document.createElement('div');
+        oNameDiv.className = 'ut-item-name';
+
+        const oDot = document.createElement('span');
+        oDot.className = 'ut-status-dot ut-status-dot--' + sStatusClass;
+        oNameDiv.appendChild(oDot);
+
+        const oSpan = document.createElement('span');
+        oSpan.textContent = sName;
+        oNameDiv.appendChild(oSpan);
+
+        oRow.appendChild(oNameDiv);
+
+        const oActions = document.createElement('div');
+        oActions.className = 'ut-item-actions';
+
+        const oGearBtn = document.createElement('button');
+        oGearBtn.className = 'ut-item-action' + (bHasNameOverride ? ' ut-item-action-url--active' : '');
+        oGearBtn.title = 'VM settings';
+        oGearBtn.dataset.action = 'openVmSettings';
+        oGearBtn.dataset.id = pVM.id;
+        oGearBtn.appendChild(createSvgIcon('#ico-settings'));
+        oActions.appendChild(oGearBtn);
+
+        const oActionBtn = document.createElement('button');
+        oActionBtn.className = 'ut-item-action';
+        oActionBtn.dataset.action = 'controlVM';
+        oActionBtn.dataset.id = pVM.id;
+        oActionBtn.dataset.command = sCommand;
+
+        if (sCurrentKeyType === 'readonly') {
+            oActionBtn.disabled = true;
+            oActionBtn.title = 'View-only API key';
+        } else {
+            oActionBtn.title = bRunning ? 'Stop' : 'Start';
+        }
+
+        oActionBtn.appendChild(createSvgIcon(bRunning ? '#ico-stop' : '#ico-play'));
+        oActions.appendChild(oActionBtn);
+
+        oRow.appendChild(oActions);
+
+        return oRow;
     };
 
     const bindVMActions = (pContainer) => {
+
+        pContainer.querySelectorAll('[data-action="openVmSettings"]').forEach((pBtn) => {
+
+            pBtn.addEventListener('click', () => {
+
+                openUrlOverrideModal(pBtn.dataset.id, 'vm');
+            });
+        });
 
         pContainer.querySelectorAll('[data-action="controlVM"]').forEach((pBtn) => {
 
@@ -1244,16 +1663,30 @@ const runPopupLogic = async () => {
                     command: pBtn.dataset.command
                 }, (pResponse) => {
 
+                    if (chrome.runtime.lastError) {
+                        pBtn.disabled = false;
+                        return;
+                    }
+
                     if (pResponse?.error === 'PERMISSION_DENIED') {
                         sCurrentKeyType = 'readonly';
                         renderDashboard();
                         return;
                     }
 
-                    setTimeout(fetchAndRender, 2000);
+                    setTimeout(() => fetchAndRender(true), 2000);
                 });
             });
         });
+    };
+
+    const buildNotifRow = (pIconRef, pIconClass, pCount, pLabel) => {
+
+        const oRow = el('div', 'ut-notif-row');
+        oRow.appendChild(createSvgIcon(pIconRef, 'ut-notif-icon ut-notif-icon--' + pIconClass));
+        oRow.appendChild(el('span', 'ut-notif-count', String(pCount)));
+        oRow.appendChild(el('span', 'ut-notif-label', pLabel));
+        return oRow;
     };
 
     const renderNotificationsCard = () => {
@@ -1264,50 +1697,70 @@ const runPopupLogic = async () => {
         const nWarning = oNotifs.warning || 0;
         const nAlert = oNotifs.alert || 0;
 
-        let sSummary = '';
+        oCardNotifications.textContent = '';
+
+        const oRight = el('div', 'ut-card-header-right');
+        oRight.appendChild(el('span', 'ut-card-badge', nTotal + ' unread'));
+
+        if (nTotal > 0) {
+
+            const oArchiveBtn = el('button', 'ut-notif-header-archive');
+            oArchiveBtn.dataset.action = 'archiveAll';
+
+            if (sCurrentKeyType === 'readonly') {
+                oArchiveBtn.disabled = true;
+                oArchiveBtn.title = 'View-only API key';
+            } else {
+                oArchiveBtn.title = 'Archive all notifications';
+            }
+
+            oArchiveBtn.appendChild(createSvgIcon('#ico-check'));
+            oArchiveBtn.appendChild(el('span', null, 'Archive All'));
+            oRight.appendChild(oArchiveBtn);
+        }
+
+        const oHeader = buildCardHeader('#ico-bell', 'Notifications', null, oRight);
+        oHeader.appendChild(createSvgIcon('#ico-chevron', 'ut-icon ut-card-chevron'));
+        oCardNotifications.appendChild(oHeader);
+
+        const oBody = el('div', 'ut-card-body');
 
         if (nTotal === 0) {
 
-            sSummary = '<div class="ut-detail-row"><span class="ut-detail-label">No unread notifications</span></div>';
+            oBody.appendChild(el('div', 'ut-detail-row')).appendChild(
+                el('span', 'ut-detail-label', 'No unread notifications')
+            );
 
         } else {
 
-            if (nAlert > 0) {
-                sSummary += '<div class="ut-notif-row">' +
-                    '<svg class="ut-notif-icon ut-notif-icon--alert"><use href="#ico-warning"/></svg>' +
-                    '<span class="ut-notif-count">' + nAlert + '</span>' +
-                    '<span class="ut-notif-label">alert' + (nAlert !== 1 ? 's' : '') + '</span>' +
-                '</div>';
-            }
+            const oSummary = el('div', 'ut-notif-summary');
 
-            if (nWarning > 0) {
-                sSummary += '<div class="ut-notif-row">' +
-                    '<svg class="ut-notif-icon ut-notif-icon--warning"><use href="#ico-warning"/></svg>' +
-                    '<span class="ut-notif-count">' + nWarning + '</span>' +
-                    '<span class="ut-notif-label">warning' + (nWarning !== 1 ? 's' : '') + '</span>' +
-                '</div>';
-            }
+            if (nAlert > 0) oSummary.appendChild(buildNotifRow('#ico-warning', 'alert', nAlert, 'alert' + (nAlert !== 1 ? 's' : '')));
+            if (nWarning > 0) oSummary.appendChild(buildNotifRow('#ico-warning', 'warning', nWarning, 'warning' + (nWarning !== 1 ? 's' : '')));
+            if (nInfo > 0) oSummary.appendChild(buildNotifRow('#ico-info', 'info', nInfo, 'info'));
 
-            if (nInfo > 0) {
-                sSummary += '<div class="ut-notif-row">' +
-                    '<svg class="ut-notif-icon ut-notif-icon--info"><use href="#ico-info"/></svg>' +
-                    '<span class="ut-notif-count">' + nInfo + '</span>' +
-                    '<span class="ut-notif-label">info</span>' +
-                '</div>';
-            }
+            oBody.appendChild(oSummary);
         }
 
-        let sListHtml = '';
+        oCardNotifications.appendChild(oBody);
 
         if (bNotificationsExpanded) {
 
+            const oBody = oCardNotifications.querySelector('.ut-card-body');
+
             if (bNotificationsLoading) {
 
-                sListHtml = '<div class="ut-notif-list-loading">Loading notifications...</div>';
+                const oLoading = document.createElement('div');
+                oLoading.className = 'ut-notif-list-loading';
+                oLoading.textContent = 'Loading notifications...';
+                oBody.appendChild(oLoading);
 
             } else if (aNotificationItems.length > 0) {
 
-                sListHtml = '<div class="ut-notif-list">';
+                const oListDiv = document.createElement('div');
+                oListDiv.className = 'ut-notif-list';
+
+                const oFrag = document.createDocumentFragment();
 
                 aNotificationItems.forEach((pNotif) => {
 
@@ -1323,53 +1776,70 @@ const runPopupLogic = async () => {
                         sIconRef = '#ico-warning';
                     }
 
-                    const sTitle = pNotif.title || pNotif.subject || 'Notification';
+                    const oItem = document.createElement('div');
+                    oItem.className = 'ut-notif-item';
+
+                    const oHeader = document.createElement('div');
+                    oHeader.className = 'ut-notif-item-header';
+
+                    oHeader.appendChild(createSvgIcon(sIconRef, 'ut-notif-icon ut-notif-icon--' + sIconClass));
+
+                    const oTitle = document.createElement('span');
+                    oTitle.className = 'ut-notif-item-title';
+                    oTitle.textContent = pNotif.title || pNotif.subject || 'Notification';
+                    oHeader.appendChild(oTitle);
+
+                    const oArchiveBtn = document.createElement('button');
+                    oArchiveBtn.className = 'ut-notif-archive-btn';
+                    oArchiveBtn.dataset.action = 'archiveNotification';
+                    oArchiveBtn.dataset.id = pNotif.id;
+
+                    if (sCurrentKeyType === 'readonly') {
+                        oArchiveBtn.disabled = true;
+                        oArchiveBtn.title = 'View-only API key';
+                    } else {
+                        oArchiveBtn.title = 'Archive';
+                    }
+
+                    oArchiveBtn.appendChild(createSvgIcon('#ico-check'));
+                    oHeader.appendChild(oArchiveBtn);
+
+                    oItem.appendChild(oHeader);
+
                     const sSubject = pNotif.subject && pNotif.title ? pNotif.subject : '';
+
+                    if (sSubject) {
+
+                        const oSubject = document.createElement('div');
+                        oSubject.className = 'ut-notif-item-subject';
+                        oSubject.textContent = sSubject;
+                        oItem.appendChild(oSubject);
+                    }
+
                     const sTime = formatTimestamp(pNotif.timestamp);
 
-                    sListHtml += '<div class="ut-notif-item">' +
-                        '<div class="ut-notif-item-header">' +
-                            '<svg class="ut-notif-icon ut-notif-icon--' + sIconClass + '"><use href="' + sIconRef + '"/></svg>' +
-                            '<span class="ut-notif-item-title">' + escapeHtml(sTitle) + '</span>' +
-                            '<button class="ut-notif-archive-btn"' +
-                                (sCurrentKeyType === 'readonly' ? ' disabled title="View-only API key"' : ' title="Archive"') +
-                                ' data-action="archiveNotification" data-id="' + escapeHtml(pNotif.id) + '">' +
-                                '<svg class="ut-icon"><use href="#ico-check"/></svg>' +
-                            '</button>' +
-                        '</div>' +
-                        (sSubject ? '<div class="ut-notif-item-subject">' + escapeHtml(sSubject) + '</div>' : '') +
-                        (sTime ? '<div class="ut-notif-item-time">' + escapeHtml(sTime) + '</div>' : '') +
-                    '</div>';
+                    if (sTime) {
+
+                        const oTime = document.createElement('div');
+                        oTime.className = 'ut-notif-item-time';
+                        oTime.textContent = sTime;
+                        oItem.appendChild(oTime);
+                    }
+
+                    oFrag.appendChild(oItem);
                 });
 
-                sListHtml += '</div>';
+                oListDiv.appendChild(oFrag);
+                oBody.appendChild(oListDiv);
 
             } else {
 
-                sListHtml = '<div class="ut-notif-list-loading">No notification details available</div>';
+                const oEmpty = document.createElement('div');
+                oEmpty.className = 'ut-notif-list-loading';
+                oEmpty.textContent = 'No notification details available';
+                oBody.appendChild(oEmpty);
             }
         }
-
-        oCardNotifications.innerHTML =
-            '<div class="ut-card-header">' +
-                '<div class="ut-card-header-left">' +
-                    '<svg class="ut-icon"><use href="#ico-bell"/></svg>' +
-                    '<span class="ut-card-title">Notifications</span>' +
-                '</div>' +
-                '<div class="ut-card-header-right">' +
-                    '<span class="ut-card-badge">' + nTotal + ' unread</span>' +
-                    (nTotal > 0 ? '<button class="ut-notif-header-archive" data-action="archiveAll"' +
-                        (sCurrentKeyType === 'readonly' ? ' disabled title="View-only API key"' : ' title="Archive all notifications"') + '>' +
-                        '<svg class="ut-icon"><use href="#ico-check"/></svg>' +
-                        '<span>Archive All</span>' +
-                    '</button>' : '') +
-                '</div>' +
-                '<svg class="ut-icon ut-card-chevron"><use href="#ico-chevron"/></svg>' +
-            '</div>' +
-            '<div class="ut-card-body">' +
-                (nTotal > 0 ? '<div class="ut-notif-summary">' + sSummary + '</div>' : sSummary) +
-                sListHtml +
-            '</div>';
 
         if (oSettings.collapsedCards.notifications) {
             oCardNotifications.classList.add('ut-card--collapsed');
@@ -1377,6 +1847,8 @@ const runPopupLogic = async () => {
             oCardNotifications.classList.remove('ut-card--collapsed');
         }
 
+        /* No collapseBound guard needed -- textContent='' above destroys
+           the old header and its listeners on every render. */
         const oNotifHeader = oCardNotifications.querySelector('.ut-card-header');
 
         if (oNotifHeader) {
@@ -1471,7 +1943,7 @@ const runPopupLogic = async () => {
                     if (pResponse?.success) {
 
                         aNotificationItems = aNotificationItems.filter((pN) => pN.id !== pBtn.dataset.id);
-                        fetchAndRender();
+                        fetchAndRender(true);
                     } else {
                         pBtn.disabled = false;
                     }
@@ -1519,7 +1991,7 @@ const runPopupLogic = async () => {
 
                         aNotificationItems = [];
                         bNotificationsExpanded = false;
-                        fetchAndRender();
+                        fetchAndRender(true);
                     } else {
                         oArchiveAll.disabled = false;
                         if (oLabel) oLabel.textContent = 'Archive All';
@@ -1565,21 +2037,22 @@ const runPopupLogic = async () => {
 
     const renderProgressBar = (pLabel, pPercent, pTooltip) => {
 
-        let sClass = '';
+        const oRow = el('div', 'ut-progress-row');
+        if (pTooltip) oRow.title = pTooltip;
 
-        if (pPercent >= 90) {
-            sClass = ' danger';
-        } else if (pPercent >= 75) {
-            sClass = ' warn';
-        }
+        oRow.appendChild(el('span', 'ut-progress-label', pLabel));
 
-        return '<div class="ut-progress-row"' + (pTooltip ? ' title="' + escapeHtml(pTooltip) + '"' : '') + '>' +
-            '<span class="ut-progress-label">' + escapeHtml(pLabel) + '</span>' +
-            '<div class="ut-progress-bar">' +
-                '<div class="ut-progress-fill' + sClass + '" style="width:' + pPercent + '%;"></div>' +
-            '</div>' +
-            '<span class="ut-progress-value">' + pPercent + '%</span>' +
-        '</div>';
+        const oBar = el('div', 'ut-progress-bar');
+        const oFill = el('div', 'ut-progress-fill');
+        if (pPercent >= 90) oFill.classList.add('danger');
+        else if (pPercent >= 75) oFill.classList.add('warn');
+        oFill.style.width = pPercent + '%';
+        oBar.appendChild(oFill);
+        oRow.appendChild(oBar);
+
+        oRow.appendChild(el('span', 'ut-progress-value', pPercent + '%'));
+
+        return oRow;
     };
 
     /**
@@ -1652,17 +2125,119 @@ const runPopupLogic = async () => {
         return nValue.toFixed(nIndex > 0 ? 1 : 0) + ' ' + aUnits[nIndex];
     };
 
-    const escapeHtml = (pStr) => {
+    const renderCardOrderList = () => {
 
-        if (pStr == null) {
-            return '';
-        }
+        const oList = document.getElementById('cardOrderList');
+        oList.textContent = '';
 
-        return String(pStr)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;');
+        const aOrder = oSettings.cardOrder || DEFAULT_SETTINGS.cardOrder;
+        const oVis = oSettings.visibleCards;
+
+        aOrder.forEach((sKey) => {
+
+            const oRow = document.createElement('div');
+            oRow.className = 'ut-card-order-row';
+            oRow.draggable = true;
+            oRow.dataset.card = sKey;
+
+            const oHandle = document.createElement('span');
+            oHandle.className = 'ut-drag-handle';
+            oHandle.appendChild(createSvgIcon('#ico-drag'));
+            oRow.appendChild(oHandle);
+
+            const oCheckbox = document.createElement('input');
+            oCheckbox.type = 'checkbox';
+            oCheckbox.checked = oVis[sKey] !== false;
+            oCheckbox.dataset.card = sKey;
+            oCheckbox.addEventListener('change', () => {
+
+                oSettings.visibleCards[sKey] = oCheckbox.checked;
+                saveStorage();
+            });
+            oRow.appendChild(oCheckbox);
+
+            const oLabel = document.createElement('span');
+            oLabel.textContent = CARD_LABELS[sKey] || sKey;
+            oRow.appendChild(oLabel);
+
+            oList.appendChild(oRow);
+        });
+
+        setupCardOrderDrag(oList);
+    };
+
+    const setupCardOrderDrag = (pList) => {
+
+        let oDragRow = null;
+
+        const aRows = pList.querySelectorAll('.ut-card-order-row');
+
+        aRows.forEach((pRow) => {
+
+            pRow.addEventListener('dragstart', (pEvent) => {
+
+                oDragRow = pRow;
+                pRow.classList.add('dragging');
+                pEvent.dataTransfer.effectAllowed = 'move';
+            });
+
+            pRow.addEventListener('dragend', () => {
+
+                pRow.classList.remove('dragging');
+
+                pList.querySelectorAll('.drag-over').forEach(
+                    (pEl) => pEl.classList.remove('drag-over')
+                );
+
+                oDragRow = null;
+            });
+
+            pRow.addEventListener('dragover', (pEvent) => {
+
+                pEvent.preventDefault();
+                pEvent.dataTransfer.dropEffect = 'move';
+
+                if (pRow !== oDragRow) {
+                    pRow.classList.add('drag-over');
+                }
+            });
+
+            pRow.addEventListener('dragleave', () => {
+
+                pRow.classList.remove('drag-over');
+            });
+
+            pRow.addEventListener('drop', (pEvent) => {
+
+                pEvent.preventDefault();
+                pRow.classList.remove('drag-over');
+
+                if (!oDragRow || oDragRow === pRow) return;
+
+                const oRect = pRow.getBoundingClientRect();
+                const nMidY = oRect.top + oRect.height / 2;
+
+                if (pEvent.clientY < nMidY) {
+                    pList.insertBefore(oDragRow, pRow);
+                } else {
+                    pList.insertBefore(oDragRow, pRow.nextSibling);
+                }
+            });
+        });
+    };
+
+    const readCardOrderFromDOM = () => {
+
+        const oList = document.getElementById('cardOrderList');
+        const aRows = oList.querySelectorAll('.ut-card-order-row');
+        const aOrder = [];
+
+        aRows.forEach((pRow) => {
+
+            aOrder.push(pRow.dataset.card);
+        });
+
+        return aOrder;
     };
 
     const openSettings = () => {
@@ -1675,80 +2250,72 @@ const runPopupLogic = async () => {
 
     const closeSettings = () => {
 
+        oSettings.cardOrder = readCardOrderFromDOM();
+        saveStorage();
+
         oSettingsPanel.style.display = 'none';
         oServerForm.style.display = 'none';
 
         renderServerTabs();
-        fetchAndRender();
+        fetchAndRender(true);
         setupAutoRefresh();
     };
 
     const applySettingsValues = () => {
 
         oRefreshInterval.value = String(oSettings.refreshInterval);
-        oVisSystem.checked = oSettings.visibleCards.system;
-        oVisArray.checked = oSettings.visibleCards.array;
-        oVisDocker.checked = oSettings.visibleCards.docker;
-        oVisVMs.checked = oSettings.visibleCards.vms;
-        oVisNotifications.checked = oSettings.visibleCards.notifications;
+        renderCardOrderList();
     };
 
     const renderServerList = () => {
 
+        oServerList.textContent = '';
+
         if (aServers.length === 0) {
 
-            oServerList.innerHTML = '<div class="ut-server-list-empty">No servers added yet</div>';
+            oServerList.appendChild(el('div', 'ut-server-list-empty', 'No servers added yet'));
             return;
         }
 
-        oServerList.innerHTML = '';
-
         aServers.forEach((pServer) => {
 
-            const oItem = document.createElement('div');
-            oItem.className = 'ut-server-item';
-            oItem.innerHTML =
-                '<div class="ut-server-item-info">' +
-                    '<div class="ut-server-item-name">' + escapeHtml(pServer.name || 'Unnamed') + '</div>' +
-                    '<div class="ut-server-item-url">' + escapeHtml(pServer.url) + '</div>' +
-                '</div>' +
-                '<div class="ut-server-item-actions">' +
-                    '<button class="ut-icon-btn edit-server" data-id="' + escapeHtml(pServer.id) + '" title="Edit">' +
-                        '<svg class="ut-icon"><use href="#ico-edit"/></svg>' +
-                    '</button>' +
-                    '<button class="ut-icon-btn delete ut-icon-btn-delete" data-id="' + escapeHtml(pServer.id) + '" title="Delete">' +
-                        '<svg class="ut-icon"><use href="#ico-trash"/></svg>' +
-                    '</button>' +
-                '</div>';
+            const oItem = el('div', 'ut-server-item');
 
-            oServerList.appendChild(oItem);
-        });
+            const oInfo = el('div', 'ut-server-item-info');
+            oInfo.appendChild(el('div', 'ut-server-item-name', pServer.name || 'Unnamed'));
+            oInfo.appendChild(el('div', 'ut-server-item-url', pServer.url));
+            oItem.appendChild(oInfo);
 
-        oServerList.querySelectorAll('.edit-server').forEach((pBtn) => {
+            const oActions = el('div', 'ut-server-item-actions');
 
-            pBtn.addEventListener('click', () => {
+            const oEditBtn = el('button', 'ut-icon-btn edit-server');
+            oEditBtn.title = 'Edit';
+            oEditBtn.appendChild(createSvgIcon('#ico-edit'));
+            oEditBtn.addEventListener('click', () => {
 
-                const oServer = aServers.find((pS) => pS.id === pBtn.dataset.id);
-
-                if (oServer) {
-                    openServerForm(oServer);
-                }
+                const oServer = aServers.find((pS) => pS.id === pServer.id);
+                if (oServer) openServerForm(oServer);
             });
-        });
+            oActions.appendChild(oEditBtn);
 
-        oServerList.querySelectorAll('.ut-icon-btn-delete').forEach((pBtn) => {
+            const oDeleteBtn = el('button', 'ut-icon-btn delete');
+            oDeleteBtn.title = 'Delete';
+            oDeleteBtn.appendChild(createSvgIcon('#ico-trash'));
+            oDeleteBtn.addEventListener('click', () => {
 
-            pBtn.addEventListener('click', () => {
+                aServers = aServers.filter((pS) => pS.id !== pServer.id);
 
-                aServers = aServers.filter((pS) => pS.id !== pBtn.dataset.id);
-
-                if (sActiveServerId === pBtn.dataset.id && aServers.length > 0) {
+                if (sActiveServerId === pServer.id && aServers.length > 0) {
                     sActiveServerId = aServers[0].id;
                 }
 
                 saveStorage();
                 renderServerList();
             });
+            oActions.appendChild(oDeleteBtn);
+
+            oItem.appendChild(oActions);
+            oServerList.appendChild(oItem);
         });
     };
 
@@ -1892,7 +2459,7 @@ const runPopupLogic = async () => {
             nRefreshTimer = setInterval(() => {
 
                 if (oSettingsPanel.style.display === 'none') {
-                    fetchAndRender();
+                    fetchAndRender(true);
                 }
 
             }, nInterval);
@@ -1906,10 +2473,17 @@ const runPopupLogic = async () => {
         saveStorage();
     });
 
+    oCompactToggle.addEventListener('click', () => {
+
+        oSettings.compactMode = !oSettings.compactMode;
+        applyCompact();
+        saveStorage();
+    });
+
     oRefreshBtn.addEventListener('click', () => {
 
         oRefreshBtn.classList.add('spinning');
-        fetchAndRender();
+        fetchAndRender(!!oCurrentData);
 
         setTimeout(() => {
 
@@ -1929,7 +2503,7 @@ const runPopupLogic = async () => {
 
     oSaveServerBtn.addEventListener('click', saveServerForm);
 
-    oTestConnectionBtn.addEventListener('click', () => {
+    oTestConnectionBtn.addEventListener('click', async () => {
 
         const sUrl = oServerFormUrl.value.trim().replace(/\/+$/, '');
         const sKey = oServerFormKey.value.trim();
@@ -1937,6 +2511,14 @@ const runPopupLogic = async () => {
         if (!sUrl || !sKey) {
 
             showTestResult('URL and API key are required.', false);
+            return;
+        }
+
+        const bGranted = await requestHostPermission(sUrl);
+
+        if (!bGranted) {
+
+            showTestResult('Host permission is required to test this connection.', false);
             return;
         }
 
@@ -1969,21 +2551,6 @@ const runPopupLogic = async () => {
         saveStorage();
         setupAutoRefresh();
     });
-
-    const bindVisibilityToggle = (pCheckbox, pKey) => {
-
-        pCheckbox.addEventListener('change', () => {
-
-            oSettings.visibleCards[pKey] = pCheckbox.checked;
-            saveStorage();
-        });
-    };
-
-    bindVisibilityToggle(oVisSystem, 'system');
-    bindVisibilityToggle(oVisArray, 'array');
-    bindVisibilityToggle(oVisDocker, 'docker');
-    bindVisibilityToggle(oVisVMs, 'vms');
-    bindVisibilityToggle(oVisNotifications, 'notifications');
 
     oUrlModalClose.addEventListener('click', closeUrlOverrideModal);
     oUrlModalCancel.addEventListener('click', closeUrlOverrideModal);
@@ -2018,14 +2585,65 @@ const runPopupLogic = async () => {
 
     oListSettingsSort.addEventListener('change', updateCustomOrderVisibility);
 
-    await loadStorage();
+    let bResizing = false;
+    let nResizeStartX = 0;
+    let nResizeStartY = 0;
+    let nResizeStartW = 0;
+    let nResizeStartH = 0;
+
+    oResizeHandle.addEventListener('mousedown', (pEvent) => {
+
+        bResizing = true;
+        nResizeStartX = pEvent.screenX;
+        nResizeStartY = pEvent.screenY;
+        nResizeStartW = document.body.offsetWidth;
+        nResizeStartH = document.body.offsetHeight;
+        pEvent.preventDefault();
+    });
+
+    document.addEventListener('mousemove', (pEvent) => {
+
+        if (!bResizing) {
+            return;
+        }
+
+        const nDeltaX = pEvent.screenX - nResizeStartX;
+        const nDeltaY = pEvent.screenY - nResizeStartY;
+
+        const nNewW = Math.min(700, Math.max(380, nResizeStartW - nDeltaX));
+        const nNewH = Math.min(800, Math.max(300, nResizeStartH + nDeltaY));
+
+        document.body.style.width = nNewW + 'px';
+        document.body.style.minHeight = nNewH + 'px';
+        document.body.style.maxHeight = nNewH + 'px';
+    });
+
+    document.addEventListener('mouseup', () => {
+
+        if (!bResizing) {
+            return;
+        }
+
+        bResizing = false;
+
+        oSettings.popupWidth = document.body.offsetWidth;
+        oSettings.popupHeight = document.body.offsetHeight;
+        saveStorage();
+    });
+
+    const bKeyError = await loadStorage();
     applyTheme();
+    applyCompact();
+    applyPopupDimensions();
     renderServerTabs();
-    fetchAndRender();
+
+    if (bKeyError) {
+        showMessageText('Encryption key mismatch -- API keys could not be decrypted. Re-enter your API keys in Settings.', true);
+    } else {
+        fetchAndRender();
+    }
+
     setupAutoRefresh();
 };
 
-document.addEventListener('DOMContentLoaded', () => {
-
-    runPopupLogic();
-});
+runPopupLogic();

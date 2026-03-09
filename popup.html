@@ -103,6 +103,14 @@
         <circle fill="currentColor" cx="15" cy="19" r="1.5"/>
     </symbol>
 
+    <symbol id="ico-compact" viewBox="0 0 24 24">
+        <path fill="currentColor" d="M12 5.83L15.17 9l1.41-1.41L12 3 7.41 7.59 8.83 9 12 5.83zm0 12.34L8.83 15l-1.41 1.41L12 21l4.59-4.59L15.17 15 12 18.17z"/>
+    </symbol>
+
+    <symbol id="ico-external" viewBox="0 0 24 24">
+        <path fill="currentColor" d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>
+    </symbol>
+
 </svg>
 
 <header class="ut-toolbar">
@@ -114,6 +122,9 @@
         <button id="themeToggle" class="ut-icon-btn" title="Toggle theme">
             <svg class="ut-icon ut-icon-sun"><use href="#ico-sun"/></svg>
             <svg class="ut-icon ut-icon-moon"><use href="#ico-moon"/></svg>
+        </button>
+        <button id="compactToggle" class="ut-icon-btn" title="Toggle compact mode">
+            <svg class="ut-icon"><use href="#ico-compact"/></svg>
         </button>
         <button id="refreshBtn" class="ut-icon-btn" title="Refresh data">
             <svg class="ut-icon"><use href="#ico-refresh"/></svg>
@@ -152,16 +163,22 @@
         </div>
         <div class="ut-modal-body">
             <div>
-                <label>Auto-Detected URL</label>
-                <div id="urlModalDetected" class="ut-url-detected">—</div>
+                <label>Display Name</label>
+                <input type="text" id="itemNameInput" class="ut-input" placeholder="Leave blank for original name" autocomplete="off">
             </div>
-            <label class="ut-override-toggle">
-                <input type="checkbox" id="urlOverrideCheckbox">
-                Override with custom URL
-            </label>
-            <div>
-                <label>Custom URL</label>
-                <input type="text" id="urlOverrideInput" class="ut-input" placeholder="https://example.local:9443" autocomplete="off" disabled>
+            <div id="urlSection" class="ut-modal-url-section">
+                <div>
+                    <label>Auto-Detected URL</label>
+                    <div id="urlModalDetected" class="ut-url-detected">—</div>
+                </div>
+                <label class="ut-override-toggle">
+                    <input type="checkbox" id="urlOverrideCheckbox">
+                    Override with custom URL
+                </label>
+                <div>
+                    <label>Custom URL</label>
+                    <input type="text" id="urlOverrideInput" class="ut-input" placeholder="https://example.local:9443" autocomplete="off" disabled>
+                </div>
             </div>
         </div>
         <div class="ut-modal-footer">
@@ -274,28 +291,15 @@
 
     <div class="ut-settings-section">
         <div class="ut-settings-section-header">
-            <span>Visible Cards</span>
+            <span>Card Order</span>
         </div>
-        <div class="ut-toggle-list">
-            <label class="ut-toggle-item">
-                <input type="checkbox" id="visSystem" checked> System
-            </label>
-            <label class="ut-toggle-item">
-                <input type="checkbox" id="visArray" checked> Array
-            </label>
-            <label class="ut-toggle-item">
-                <input type="checkbox" id="visDocker" checked> Docker
-            </label>
-            <label class="ut-toggle-item">
-                <input type="checkbox" id="visVMs" checked> VMs
-            </label>
-            <label class="ut-toggle-item">
-                <input type="checkbox" id="visNotifications" checked> Notifications
-            </label>
-        </div>
+        <div class="ut-card-order-hint">Drag to reorder, uncheck to hide</div>
+        <div id="cardOrderList" class="ut-custom-order-list"></div>
     </div>
 
 </div>
+
+<div id="resizeHandle" class="ut-resize-handle"></div>
 
 <footer class="ut-footer">
     <span class="ut-footer-text">Unraid Dash v1.0.0</span>

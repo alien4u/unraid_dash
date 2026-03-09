@@ -1336,26 +1336,6 @@ body.theme-dark .ut-icon-moon {
     color: var(--ut-status-error);
 }
 
-.ut-toggle-list {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-}
-
-.ut-toggle-item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 4px 0;
-    font-size: 12px;
-    cursor: pointer;
-    color: var(--ut-text);
-}
-
-.ut-toggle-item input[type="checkbox"] {
-    accent-color: var(--ut-accent);
-}
-
 .ut-footer {
     position: sticky;
     bottom: 0;
@@ -1416,4 +1396,220 @@ body::-webkit-scrollbar-thumb {
 
 body::-webkit-scrollbar-thumb:hover {
     background: var(--ut-text-muted);
+}
+
+.ut-icon-btn.active {
+    background: rgba(255, 255, 255, 0.2);
+    border-color: rgba(255, 255, 255, 0.3);
+}
+
+body.ut-compact {
+    font-size: 11px;
+}
+
+body.ut-compact .ut-toolbar {
+    padding: 6px 10px;
+}
+
+body.ut-compact .ut-toolbar-title {
+    font-size: 12px;
+}
+
+body.ut-compact .ut-dashboard {
+    padding: 6px 10px 4px;
+    gap: 6px;
+}
+
+body.ut-compact .ut-card-header {
+    padding: 5px 10px;
+}
+
+body.ut-compact .ut-card-title {
+    font-size: 10px;
+}
+
+body.ut-compact .ut-card-badge {
+    font-size: 9px;
+}
+
+body.ut-compact .ut-card-body {
+    padding: 7px 10px;
+}
+
+body.ut-compact .ut-detail-row {
+    font-size: 10px;
+    padding: 2px 0;
+}
+
+body.ut-compact .ut-item-row {
+    font-size: 11px;
+    padding: 3px 0;
+}
+
+body.ut-compact .ut-progress-row {
+    margin-bottom: 4px;
+}
+
+body.ut-compact .ut-progress-bar {
+    height: 6px;
+}
+
+body.ut-compact .ut-progress-label,
+body.ut-compact .ut-progress-value {
+    font-size: 10px;
+}
+
+body.ut-compact .ut-disk-chip {
+    font-size: 9px;
+    padding: 1px 5px;
+}
+
+body.ut-compact .ut-disk-section-title {
+    font-size: 9px;
+}
+
+body.ut-compact .ut-notif-row {
+    font-size: 11px;
+    padding: 2px 0;
+}
+
+body.ut-compact .ut-notif-item-title {
+    font-size: 11px;
+}
+
+body.ut-compact .ut-notif-item-subject {
+    font-size: 10px;
+}
+
+body.ut-compact .ut-notif-item-time {
+    font-size: 9px;
+}
+
+body.ut-compact .ut-show-more {
+    font-size: 10px;
+    padding: 4px 0 1px;
+}
+
+body.ut-compact .ut-footer {
+    padding: 3px 10px;
+}
+
+body.ut-compact .ut-footer-text,
+body.ut-compact .ut-footer-link {
+    font-size: 9px;
+}
+
+body.ut-compact .ut-settings-section-header {
+    font-size: 11px;
+}
+
+body.ut-compact .ut-server-item-name {
+    font-size: 11px;
+}
+
+body.ut-compact .ut-server-item-url {
+    font-size: 10px;
+}
+
+.ut-modal-url-section {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.ut-server-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    color: var(--ut-text);
+    text-decoration: none;
+    font-weight: 500;
+    transition: color var(--ut-transition);
+}
+
+.ut-server-link:hover {
+    color: var(--ut-accent);
+}
+
+.ut-server-link-icon {
+    width: 11px;
+    height: 11px;
+    opacity: 0.5;
+}
+
+.ut-server-link:hover .ut-server-link-icon {
+    opacity: 1;
+}
+
+.ut-card-order-hint {
+    font-size: 10px;
+    color: var(--ut-text-muted);
+    margin-bottom: 6px;
+}
+
+.ut-card-order-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    border-bottom: 1px solid var(--ut-border-light);
+    cursor: grab;
+    background: var(--ut-bg-card);
+    transition: opacity 0.15s ease;
+}
+
+.ut-card-order-row:last-child {
+    border-bottom: none;
+}
+
+.ut-card-order-row.dragging {
+    opacity: 0.5;
+}
+
+.ut-card-order-row.drag-over {
+    border-top: 2px solid var(--ut-accent);
+}
+
+.ut-card-order-row input[type="checkbox"] {
+    accent-color: var(--ut-accent);
+    flex-shrink: 0;
+}
+
+.ut-resize-handle {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    width: 14px;
+    height: 14px;
+    cursor: nesw-resize;
+    z-index: 300;
+    opacity: 0;
+    transition: opacity var(--ut-transition);
+}
+
+.ut-resize-handle:hover {
+    opacity: 1;
+}
+
+/* Update badge dot */
+.ut-update-badge {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #ff8c2f;
+    flex-shrink: 0;
+    margin-left: 2px;
+}
+
+.ut-resize-handle::after {
+    content: '';
+    position: absolute;
+    bottom: 2px;
+    left: 2px;
+    width: 8px;
+    height: 8px;
+    border-left: 2px solid var(--ut-text-muted);
+    border-bottom: 2px solid var(--ut-text-muted);
+    opacity: 0.5;
 }
