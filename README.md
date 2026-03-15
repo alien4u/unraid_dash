@@ -6,7 +6,7 @@
 
 **Monitor your Unraid servers at a glance: system metrics, array status, Docker containers, VMs, and notifications in a single popup.**
 
-![Version](https://img.shields.io/badge/version-1.1.0-blue)
+![Version](https://img.shields.io/badge/version-1.2.0-blue)
 ![License](https://img.shields.io/badge/license-FSL--1.1--MIT-green)
 ![Manifest](https://img.shields.io/badge/manifest-v3-orange)
 
@@ -14,11 +14,11 @@
 
 | Store | Version | Link |
 |-------|---------|------|
-| Chrome Web Store | v1.1.0 | [Install](https://chromewebstore.google.com/detail/agdbddldhhjehjplobapnnpijojcaafk) |
-| Edge Add-ons | v1.1.0 | [Install](https://microsoftedge.microsoft.com/addons/detail/unraid-dash/mkejneiecljggcdblblgpcfoaipjdpie) |
-| Firefox Add-ons | v1.1.0 | [Install](https://addons.mozilla.org/en-US/firefox/addon/unraid-dash/) |
+| Chrome Web Store | v1.2.0 | [Install](https://chromewebstore.google.com/detail/agdbddldhhjehjplobapnnpijojcaafk) |
+| Edge Add-ons | v1.2.0 | [Install](https://microsoftedge.microsoft.com/addons/detail/unraid-dash/mkejneiecljggcdblblgpcfoaipjdpie) |
+| Firefox Add-ons | v1.2.0 | [Install](https://addons.mozilla.org/en-US/firefox/addon/unraid-dash/) |
 
-> v1.1.0 is available on all stores.
+> v1.2.0 is available on all stores.
 
 ## 📖 Overview
 
@@ -160,6 +160,18 @@ Chrome, Edge, and Firefox (MV3, 142+).
 - Code co-authored with **Claude Code**
 
 ## 📝 Changelog
+
+### v1.2.0 - 2026-03-14
+
+- Fixed custom names and URL overrides being lost when Docker containers are updated or recreated (override keys now use container names instead of IDs)
+- Fixed custom sort order being lost on container recreation (same root cause)
+- One-time automatic migration converts existing overrides and sort order to the new format
+- Server deletion now shows a confirmation dialog and cleans up all associated data (overrides, encrypted keys)
+- Fixed `chrome.permissions.request()` not firing callback on Firefox (converted to async/await)
+- Dynamic version display in footer via `chrome.runtime.getManifest()`
+- Updated PRIVACY.md to reflect AES-256-GCM encryption added in v1.1.0
+- Added JSDoc documentation to all named functions
+- Code quality improvements (naming conventions, timer cleanup)
 
 ### v1.1.0 - 2026-03-08
 

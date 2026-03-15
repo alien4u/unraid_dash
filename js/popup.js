@@ -1,3 +1,4 @@
+/** Initializes the popup UI, loads settings, and starts the dashboard */
 const runPopupLogic = async () => {
 
     if (typeof browser !== 'undefined' && typeof chrome === 'undefined') {
@@ -37,6 +38,11 @@ const runPopupLogic = async () => {
             vms: {...DEFAULT_LIST_SETTINGS}
         }
     };
+
+    const oFooterVersion = document.getElementById('footerVersion');
+    if (oFooterVersion) {
+        oFooterVersion.textContent = 'Unraid Dash v' + chrome.runtime.getManifest().version;
+    }
 
     const ERROR_MESSAGES = {
         AUTH_ERROR: 'Authentication failed. Check your API key in Settings, then try Refresh.',
@@ -115,11 +121,74 @@ const runPopupLogic = async () => {
     let bNotificationsLoading = false;
     let oDockerUrlOverrides = {};
     let oItemNameOverrides = {};
-    let sUrlOverrideContainerId = null;
+    let sUrlOverrideItemKey = null;
     let sItemModalType = null;
     let sListSettingsCardType = null;
     let sCurrentKeyType = null;
+    let bOverridesMigrated = false;
 
+    /**
+     * Migrates override keys from container IDs to container names
+     * @param {Array} pContainers - Docker containers from the API response
+     */
+    const migrateOverrideKeys = (pContainers) => {
+
+        if (bOverridesMigrated || !pContainers || pContainers.length === 0) {
+            return;
+        }
+
+        bOverridesMigrated = true;
+
+        const oIdToName = new Map();
+        pContainers.forEach((pC) => {
+
+            const sName = getContainerName(pC);
+            oIdToName.set(pC.id, sName);
+        });
+
+        let bChanged = false;
+
+        [oDockerUrlOverrides, oItemNameOverrides].forEach((pOverrides) => {
+
+            Object.keys(pOverrides).forEach((pKey) => {
+
+                const nSep = pKey.indexOf('::');
+                if (nSep === -1) return;
+
+                const sServerId = pKey.substring(0, nSep);
+                const sItemKey = pKey.substring(nSep + 2);
+                const sName = oIdToName.get(sItemKey);
+
+                if (sName) {
+                    const sNewKey = sServerId + '::' + sName;
+                    if (!pOverrides[sNewKey]) {
+                        pOverrides[sNewKey] = pOverrides[pKey];
+                    }
+                    delete pOverrides[pKey];
+                    bChanged = true;
+                }
+            });
+        });
+
+        const aDockerOrder = oSettings.listSettings?.docker?.customOrder || [];
+        if (aDockerOrder.length > 0) {
+            const aMigrated = aDockerOrder.map((pId) => oIdToName.get(pId) || pId);
+            if (aMigrated.some((pVal, pIdx) => pVal !== aDockerOrder[pIdx])) {
+                oSettings.listSettings.docker.customOrder = aMigrated;
+                bChanged = true;
+            }
+        }
+
+        if (bChanged) {
+            saveOverrides();
+            saveStorage();
+        }
+    };
+
+    /**
+     * Retrieves the AES-GCM encryption key from storage
+     * @returns {Promise<CryptoKey|null>} The imported crypto key, or null if not found
+     */
     const getEncryptionKey = async () => {
 
         const oResult = await new Promise((resolve) => chrome.storage.local.get(['_ek'], resolve));
@@ -131,6 +200,12 @@ const runPopupLogic = async () => {
         return null;
     };
 
+    /**
+     * Encrypts a string value using AES-GCM
+     * @param {CryptoKey} pKey - The AES-GCM crypto key
+     * @param {string} pValue - The plaintext value to encrypt
+     * @returns {Promise<{iv: number[], data: number[]}>} The encrypted payload
+     */
     const encryptValue = async (pKey, pValue) => {
 
         const aIv = crypto.getRandomValues(new Uint8Array(12));
@@ -139,6 +214,12 @@ const runPopupLogic = async () => {
         return {iv: Array.from(aIv), data: Array.from(new Uint8Array(aData))};
     };
 
+    /**
+     * Decrypts an AES-GCM encrypted payload back to a string
+     * @param {CryptoKey} pKey - The AES-GCM crypto key
+     * @param {{iv: number[], data: number[]}} pEncrypted - The encrypted payload
+     * @returns {Promise<string>} The decrypted plaintext
+     */
     const decryptValue = async (pKey, pEncrypted) => {
 
         const aDecrypted = await crypto.subtle.decrypt(
@@ -150,6 +231,10 @@ const runPopupLogic = async () => {
         return new TextDecoder().decode(aDecrypted);
     };
 
+    /**
+     * Loads all settings, servers, and overrides from chrome.storage.local
+     * @returns {Promise<boolean>} True if API key decryption failed
+     */
     const loadStorage = async () => {
 
         const oResult = await new Promise((resolve) => {
@@ -239,6 +324,7 @@ const runPopupLogic = async () => {
         return bDecryptionFailed;
     };
 
+    /** Persists servers, encrypted API keys, and settings to chrome.storage.local */
     const saveStorage = async () => {
 
         const oPlainKeys = {};
@@ -281,11 +367,17 @@ const runPopupLogic = async () => {
         }, resolve));
     };
 
-    const getOverrideKey = (pContainerId) => {
+    /**
+     * Builds a scoped override key by prefixing the active server ID
+     * @param {string} pItemKey - The item identifier (container name or VM id)
+     * @returns {string} The scoped key in the form "serverId::itemKey"
+     */
+    const getOverrideKey = (pItemKey) => {
 
-        return sActiveServerId + '::' + pContainerId;
+        return sActiveServerId + '::' + pItemKey;
     };
 
+    /** Persists URL and name overrides to chrome.storage.local */
     const saveOverrides = () => {
 
         return new Promise((resolve) => {
@@ -297,6 +389,7 @@ const runPopupLogic = async () => {
         });
     };
 
+    /** Applies the current theme (light/dark) to the document body */
     const applyTheme = () => {
 
         if (oSettings.theme === 'dark') {
@@ -306,6 +399,7 @@ const runPopupLogic = async () => {
         }
     };
 
+    /** Applies or removes compact mode styling on the document body */
     const applyCompact = () => {
 
         if (oSettings.compactMode) {
@@ -317,6 +411,7 @@ const runPopupLogic = async () => {
         }
     };
 
+    /** Sets the popup body width and height from saved settings */
     const applyPopupDimensions = () => {
 
         if (oSettings.popupWidth > 0) {
@@ -329,6 +424,12 @@ const runPopupLogic = async () => {
         }
     };
 
+    /**
+     * Creates an SVG element with a <use> reference to a sprite icon
+     * @param {string} pHref - The sprite icon reference (e.g. '#ico-settings')
+     * @param {string} [pClass] - CSS class name, defaults to 'ut-icon'
+     * @returns {SVGSVGElement} The constructed SVG element
+     */
     const createSvgIcon = (pHref, pClass) => {
 
         const oSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -341,7 +442,14 @@ const runPopupLogic = async () => {
         return oSvg;
     };
 
-    const el = (pTag, pClass, pText) => {
+    /**
+     * Creates a DOM element with optional class and text content
+     * @param {string} pTag - HTML tag name
+     * @param {string} [pClass] - CSS class name
+     * @param {string} [pText] - Text content
+     * @returns {HTMLElement} The constructed element
+     */
+    const buildEl = (pTag, pClass, pText) => {
 
         const oEl = document.createElement(pTag);
         if (pClass) oEl.className = pClass;
@@ -357,12 +465,19 @@ const runPopupLogic = async () => {
         notifications: 'Notifications'
     };
 
+    /**
+     * Retrieves the display name for an item, falling back to the original name
+     * @param {string} pItemId - The item identifier used as the override key
+     * @param {string} pFallbackName - Name to return if no override exists
+     * @returns {string} The overridden name or the fallback
+     */
     const getItemDisplayName = (pItemId, pFallbackName) => {
 
         const sKey = getOverrideKey(pItemId);
         return oItemNameOverrides[sKey] || pFallbackName;
     };
 
+    /** Shows the loading spinner and hides the message and dashboard */
     const showSpinner = () => {
 
         oSpinner.classList.remove('hidden');
@@ -371,6 +486,10 @@ const runPopupLogic = async () => {
         oDashboard.style.display = 'none';
     };
 
+    /**
+     * Displays a DOM element as the main message, hiding spinner and dashboard
+     * @param {HTMLElement} pElement - The element to display in the message area
+     */
     const showMessageEl = (pElement) => {
 
         oSpinner.classList.add('hidden');
@@ -382,6 +501,11 @@ const runPopupLogic = async () => {
         oMessage.style.display = 'block';
     };
 
+    /**
+     * Displays a text message, hiding spinner and dashboard
+     * @param {string} pText - The message text
+     * @param {boolean} pIsError - If true, applies error styling
+     */
     const showMessageText = (pText, pIsError) => {
 
         oSpinner.classList.add('hidden');
@@ -392,6 +516,7 @@ const runPopupLogic = async () => {
         oMessage.style.display = 'block';
     };
 
+    /** Shows the dashboard container, hiding the spinner and message */
     const showDashboard = () => {
 
         oSpinner.classList.add('hidden');
@@ -400,6 +525,11 @@ const runPopupLogic = async () => {
         oDashboard.style.display = 'flex';
     };
 
+    /**
+     * Maps an error code to a human-readable message
+     * @param {string} pError - The error code or raw message
+     * @returns {string} The user-facing error message
+     */
     const getErrorMessage = (pError) => {
 
         if (!pError) {
@@ -409,6 +539,7 @@ const runPopupLogic = async () => {
         return ERROR_MESSAGES[pError] || pError;
     };
 
+    /** Renders the server tab bar, hidden when only one server is enabled */
     const renderServerTabs = () => {
 
         const aEnabled = aServers.filter((pS) => pS.enabled !== false);
@@ -437,6 +568,10 @@ const runPopupLogic = async () => {
         });
     };
 
+    /**
+     * Switches the active server and refreshes the dashboard
+     * @param {string} pServerId - The server ID to activate
+     */
     const switchServer = (pServerId) => {
 
         sActiveServerId = pServerId;
@@ -451,6 +586,10 @@ const runPopupLogic = async () => {
         fetchAndRender();
     };
 
+    /**
+     * Fetches dashboard data from the active server and renders the UI
+     * @param {boolean} [pSilent] - If true, suppresses the loading spinner on fetch
+     */
     const fetchAndRender = (pSilent) => {
 
         if (aServers.length === 0) {
@@ -507,10 +646,12 @@ const runPopupLogic = async () => {
 
             oCurrentData = pResponse.data;
             sCurrentKeyType = pResponse.keyType || 'admin';
+            migrateOverrideKeys(oCurrentData?.docker?.containers);
             renderDashboard();
         });
     };
 
+    /** Renders all visible dashboard cards in the configured order */
     const renderDashboard = () => {
 
         if (!oCurrentData) {
@@ -541,27 +682,30 @@ const runPopupLogic = async () => {
 
         const aOrder = oSettings.cardOrder || DEFAULT_SETTINGS.cardOrder;
 
-        aOrder.forEach((sKey) => {
+        aOrder.forEach((pKey) => {
 
-            const oCard = oCardMap[sKey];
+            const oCard = oCardMap[pKey];
 
             if (!oCard) {
                 return;
             }
 
-            oCard.style.display = oVis[sKey] ? '' : 'none';
+            oCard.style.display = oVis[pKey] ? '' : 'none';
             oDashboard.appendChild(oCard);
 
-            if (oVis[sKey] && oRenderMap[sKey]) {
-                oRenderMap[sKey]();
+            if (oVis[pKey] && oRenderMap[pKey]) {
+                oRenderMap[pKey]();
             }
         });
 
         setupCollapsibleCards();
     };
 
-    /* Notifications card handles its own collapse (see renderNotificationsCard)
-       because it re-renders itself when expanding/collapsing the list */
+    /**
+     * Attaches collapse/expand behavior to card headers.
+     * Notifications card handles its own collapse (see renderNotificationsCard)
+     * because it re-renders itself when expanding/collapsing the list.
+     */
     const setupCollapsibleCards = () => {
 
         const aCardDefs = [
@@ -608,6 +752,11 @@ const runPopupLogic = async () => {
         });
     };
 
+    /**
+     * Toggles a card's collapsed state and persists the change
+     * @param {string} pKey - The card key (e.g. 'system', 'docker')
+     * @param {HTMLElement} pCardEl - The card DOM element
+     */
     const toggleCard = (pKey, pCardEl) => {
 
         const bCollapsed = !oSettings.collapsedCards[pKey];
@@ -622,32 +771,47 @@ const runPopupLogic = async () => {
         saveStorage();
     };
 
+    /**
+     * Builds a label/value detail row for card bodies
+     * @param {string} pLabel - The label text
+     * @param {string} pValue - The value text
+     * @returns {HTMLElement} The detail row element
+     */
     const buildDetailRow = (pLabel, pValue) => {
 
-        const oRow = el('div', 'ut-detail-row');
-        oRow.appendChild(el('span', 'ut-detail-label', pLabel));
-        oRow.appendChild(el('span', 'ut-detail-value', pValue));
+        const oRow = buildEl('div', 'ut-detail-row');
+        oRow.appendChild(buildEl('span', 'ut-detail-label', pLabel));
+        oRow.appendChild(buildEl('span', 'ut-detail-value', pValue));
         return oRow;
     };
 
+    /**
+     * Builds a card header with icon, title, and optional badge or right-side content
+     * @param {string} pIconRef - Sprite icon reference for the header icon
+     * @param {string} pTitle - Card title text
+     * @param {string} [pBadgeText] - Optional badge text (ignored if pRightContent is provided)
+     * @param {HTMLElement} [pRightContent] - Optional right-side element (takes priority over badge)
+     * @returns {HTMLElement} The card header element
+     */
     const buildCardHeader = (pIconRef, pTitle, pBadgeText, pRightContent) => {
 
-        const oHeader = el('div', 'ut-card-header');
+        const oHeader = buildEl('div', 'ut-card-header');
 
-        const oLeft = el('div', 'ut-card-header-left');
+        const oLeft = buildEl('div', 'ut-card-header-left');
         oLeft.appendChild(createSvgIcon(pIconRef));
-        oLeft.appendChild(el('span', 'ut-card-title', pTitle));
+        oLeft.appendChild(buildEl('span', 'ut-card-title', pTitle));
         oHeader.appendChild(oLeft);
 
         if (pRightContent) {
             oHeader.appendChild(pRightContent);
         } else if (pBadgeText != null) {
-            oHeader.appendChild(el('span', 'ut-card-badge', pBadgeText));
+            oHeader.appendChild(buildEl('span', 'ut-card-badge', pBadgeText));
         }
 
         return oHeader;
     };
 
+    /** Renders the System card with server info, CPU, memory, and network */
     const renderSystemCard = () => {
 
         const oVars = oCurrentData.vars || {};
@@ -675,11 +839,11 @@ const runPopupLogic = async () => {
         oCardSystem.textContent = '';
         oCardSystem.appendChild(buildCardHeader('#ico-system', 'System', 'v' + sVersion));
 
-        const oBody = el('div', 'ut-card-body');
+        const oBody = buildEl('div', 'ut-card-body');
 
-        const oServerRow = el('div', 'ut-detail-row');
-        oServerRow.appendChild(el('span', 'ut-detail-label', 'Server'));
-        const oServerVal = el('span', 'ut-detail-value');
+        const oServerRow = buildEl('div', 'ut-detail-row');
+        oServerRow.appendChild(buildEl('span', 'ut-detail-label', 'Server'));
+        const oServerVal = buildEl('span', 'ut-detail-value');
 
         if (sServerUrl) {
 
@@ -718,6 +882,7 @@ const runPopupLogic = async () => {
         oCardSystem.appendChild(oBody);
     };
 
+    /** Renders the Array card with disk status, parity, cache, and capacity */
     const renderArrayCard = () => {
 
         const bArrayAvailable = oCurrentData.array !== null && oCurrentData.array !== undefined;
@@ -727,9 +892,9 @@ const runPopupLogic = async () => {
         if (!bArrayAvailable) {
 
             oCardArray.appendChild(buildCardHeader('#ico-array', 'Array', 'unavailable'));
-            const oBody = el('div', 'ut-card-body');
-            oBody.appendChild(el('div', 'ut-detail-row')).appendChild(
-                el('span', 'ut-detail-label', 'Array data not available on this server')
+            const oBody = buildEl('div', 'ut-card-body');
+            oBody.appendChild(buildEl('div', 'ut-detail-row')).appendChild(
+                buildEl('span', 'ut-detail-label', 'Array data not available on this server')
             );
             oCardArray.appendChild(oBody);
             return;
@@ -756,14 +921,14 @@ const runPopupLogic = async () => {
             sStateClass = sState === 'STOPPED' ? 'stopped' : 'warning';
         }
 
-        const oBadge = el('span', 'ut-card-badge');
-        const oDot = el('span', 'ut-status-dot ut-status-dot--' + sStateClass);
+        const oBadge = buildEl('span', 'ut-card-badge');
+        const oDot = buildEl('span', 'ut-status-dot ut-status-dot--' + sStateClass);
         oBadge.appendChild(oDot);
         oBadge.appendChild(document.createTextNode(sState));
 
         oCardArray.appendChild(buildCardHeader('#ico-array', 'Array', null, oBadge));
 
-        const oBody = el('div', 'ut-card-body');
+        const oBody = buildEl('div', 'ut-card-body');
 
         if (nTotalKB > 0) {
             oBody.appendChild(buildDetailRow('Capacity',
@@ -771,10 +936,10 @@ const runPopupLogic = async () => {
             oBody.appendChild(renderProgressBar('Used', nPercent));
         }
 
-        const oDiskRow = el('div', 'ut-detail-row');
+        const oDiskRow = buildEl('div', 'ut-detail-row');
         oDiskRow.style.marginTop = '4px';
-        oDiskRow.appendChild(el('span', 'ut-detail-label', 'Disks'));
-        const oDiskVal = el('span', 'ut-detail-value');
+        oDiskRow.appendChild(buildEl('span', 'ut-detail-label', 'Disks'));
+        const oDiskVal = buildEl('span', 'ut-detail-value');
         oDiskVal.textContent = nDiskOk + ' active';
 
         if (nDiskErrors > 0) {
@@ -802,6 +967,12 @@ const runPopupLogic = async () => {
         oCardArray.appendChild(oBody);
     };
 
+    /**
+     * Renders a disk section (parity, disks, or cache) with status chips
+     * @param {string} pTitle - Section title
+     * @param {Array} pDisks - Array of disk objects from the API
+     * @returns {HTMLElement|null} The section element, or null if no active disks
+     */
     const renderDiskSection = (pTitle, pDisks) => {
 
         const aActive = pDisks.filter((pD) => pD.status && pD.status !== 'DISK_NP');
@@ -810,10 +981,10 @@ const runPopupLogic = async () => {
             return null;
         }
 
-        const oSection = el('div', 'ut-disk-section');
-        oSection.appendChild(el('div', 'ut-disk-section-title', pTitle));
+        const oSection = buildEl('div', 'ut-disk-section');
+        oSection.appendChild(buildEl('div', 'ut-disk-section-title', pTitle));
 
-        const oGrid = el('div', 'ut-disk-grid');
+        const oGrid = buildEl('div', 'ut-disk-grid');
 
         aActive.forEach((pDisk) => {
 
@@ -830,14 +1001,14 @@ const runPopupLogic = async () => {
                 sTooltip += (sTooltip ? ' \u00B7 ' : '') + pDisk.numErrors + ' error' + (pDisk.numErrors !== 1 ? 's' : '');
             }
 
-            const oChip = el('span', 'ut-disk-chip');
+            const oChip = buildEl('span', 'ut-disk-chip');
             if (sTooltip) oChip.dataset.tooltip = sTooltip;
 
-            oChip.appendChild(el('span', 'ut-status-dot ut-status-dot--' + sStatus));
+            oChip.appendChild(buildEl('span', 'ut-status-dot ut-status-dot--' + sStatus));
             oChip.appendChild(document.createTextNode(sName));
 
             if (pDisk.temp != null) {
-                oChip.appendChild(el('span', 'ut-disk-chip-temp', pDisk.temp + '\u00B0C'));
+                oChip.appendChild(buildEl('span', 'ut-disk-chip-temp', pDisk.temp + '\u00B0C'));
             }
 
             oGrid.appendChild(oChip);
@@ -848,6 +1019,11 @@ const runPopupLogic = async () => {
         return oSection;
     };
 
+    /**
+     * Returns the CSS status class for a disk based on its state
+     * @param {Object} pDisk - The disk object from the API
+     * @returns {string} Status class name (running, standby, stopped, warning, error)
+     */
     const getDiskStatusClass = (pDisk) => {
 
         if (pDisk.numErrors > 0) {
@@ -865,6 +1041,13 @@ const runPopupLogic = async () => {
         return 'warning';
     };
 
+    /**
+     * Sorts list items (containers or VMs) according to the card's sort mode
+     * @param {Array} pItems - The items to sort
+     * @param {string} pCardType - The card type ('docker' or 'vms')
+     * @param {Function} pFnName - Function that extracts a display name from an item
+     * @returns {Array} A new sorted array
+     */
     const sortListItems = (pItems, pCardType, pFnName) => {
 
         const oLS = oSettings.listSettings[pCardType];
@@ -884,12 +1067,14 @@ const runPopupLogic = async () => {
 
             const aOrder = oLS.customOrder;
             const oIndexMap = new Map();
-            aOrder.forEach((pId, pIdx) => oIndexMap.set(pId, pIdx));
+            aOrder.forEach((pKey, pIdx) => oIndexMap.set(pKey, pIdx));
 
             aSorted.sort((pA, pB) => {
 
-                const nIdxA = oIndexMap.has(pA.id) ? oIndexMap.get(pA.id) : Infinity;
-                const nIdxB = oIndexMap.has(pB.id) ? oIndexMap.get(pB.id) : Infinity;
+                const sKeyA = getItemSortKey(pA, pCardType);
+                const sKeyB = getItemSortKey(pB, pCardType);
+                const nIdxA = oIndexMap.has(sKeyA) ? oIndexMap.get(sKeyA) : Infinity;
+                const nIdxB = oIndexMap.has(sKeyB) ? oIndexMap.get(sKeyB) : Infinity;
 
                 if (nIdxA !== nIdxB) return nIdxA - nIdxB;
 
@@ -910,6 +1095,12 @@ const runPopupLogic = async () => {
         return aSorted;
     };
 
+    /**
+     * Returns the number of items to show before the "Show more" button
+     * @param {string} pCardType - The card type ('docker' or 'vms')
+     * @param {number} pTotalCount - Total number of items available
+     * @returns {number} The visible count (0 means show all)
+     */
     const getVisibleCount = (pCardType, pTotalCount) => {
 
         const nSetting = oSettings.listSettings[pCardType].visibleCount;
@@ -917,8 +1108,17 @@ const runPopupLogic = async () => {
         return nSetting === 0 ? pTotalCount : nSetting;
     };
 
+    /**
+     * Extracts the display name from a VM object
+     * @param {Object} pVM - The VM domain object
+     * @returns {string} The VM name, ID, or '?'
+     */
     const getVMName = (pVM) => pVM.name || pVM.id || '?';
 
+    /**
+     * Opens the list settings modal for a given card type
+     * @param {string} pCardType - The card type ('docker' or 'vms')
+     */
     const openListSettingsModal = (pCardType) => {
 
         sListSettingsCardType = pCardType;
@@ -934,12 +1134,14 @@ const runPopupLogic = async () => {
         oListSettingsBackdrop.style.display = 'flex';
     };
 
+    /** Closes the list settings modal and clears the active card type */
     const closeListSettingsModal = () => {
 
         oListSettingsBackdrop.style.display = 'none';
         sListSettingsCardType = null;
     };
 
+    /** Shows or hides the custom order section based on the selected sort mode */
     const updateCustomOrderVisibility = () => {
 
         const bCustom = oListSettingsSort.value === 'custom';
@@ -950,6 +1152,21 @@ const runPopupLogic = async () => {
         }
     };
 
+    /**
+     * Returns the sort key for a list item based on card type
+     * @param {Object} pItem - The container or VM object
+     * @param {string} pCardType - The card type ('docker' or 'vms')
+     * @returns {string} The sort key (container name or VM id)
+     */
+    const getItemSortKey = (pItem, pCardType) => {
+
+        return pCardType === 'docker' ? getContainerName(pItem) : pItem.id;
+    };
+
+    /**
+     * Renders the draggable custom order list for containers or VMs
+     * @param {string} pCardType - The card type ('docker' or 'vms')
+     */
     const renderCustomOrderList = (pCardType) => {
 
         let aItems = [];
@@ -964,31 +1181,31 @@ const runPopupLogic = async () => {
         }
 
         const aExistingOrder = oSettings.listSettings[pCardType].customOrder;
-        const oIdSet = new Set(aItems.map((pI) => pI.id));
+        const oKeySet = new Set(aItems.map((pI) => getItemSortKey(pI, pCardType)));
 
         const aOrdered = [];
         const aUsed = new Set();
 
-        aExistingOrder.forEach((pId) => {
+        aExistingOrder.forEach((pKey) => {
 
-            if (oIdSet.has(pId)) {
-                aOrdered.push(pId);
-                aUsed.add(pId);
+            if (oKeySet.has(pKey)) {
+                aOrdered.push(pKey);
+                aUsed.add(pKey);
             }
         });
 
-        const aNew = aItems.filter((pI) => !aUsed.has(pI.id));
+        const aNew = aItems.filter((pI) => !aUsed.has(getItemSortKey(pI, pCardType)));
         aNew.sort((pA, pB) => fnName(pA).localeCompare(fnName(pB)));
-        aNew.forEach((pI) => aOrdered.push(pI.id));
+        aNew.forEach((pI) => aOrdered.push(getItemSortKey(pI, pCardType)));
 
-        const oItemMap = new Map();
-        aItems.forEach((pI) => oItemMap.set(pI.id, pI));
+        const oKeyMap = new Map();
+        aItems.forEach((pI) => oKeyMap.set(getItemSortKey(pI, pCardType), pI));
 
         oListSettingsCustomList.textContent = '';
 
-        aOrdered.forEach((pId) => {
+        aOrdered.forEach((pKey) => {
 
-            const oItem = oItemMap.get(pId);
+            const oItem = oKeyMap.get(pKey);
 
             if (!oItem) return;
 
@@ -996,16 +1213,16 @@ const runPopupLogic = async () => {
             const bRunning = oItem.state === 'RUNNING';
             const sStatusClass = bRunning ? 'running' : (oItem.state === 'PAUSED' ? 'paused' : 'stopped');
 
-            const oRow = el('div', 'ut-drag-row');
+            const oRow = buildEl('div', 'ut-drag-row');
             oRow.draggable = true;
-            oRow.dataset.id = pId;
+            oRow.dataset.id = pKey;
 
-            const oHandle = el('span', 'ut-drag-handle');
+            const oHandle = buildEl('span', 'ut-drag-handle');
             oHandle.appendChild(createSvgIcon('#ico-drag'));
             oRow.appendChild(oHandle);
 
-            oRow.appendChild(el('span', 'ut-status-dot ut-status-dot--' + sStatusClass));
-            oRow.appendChild(el('span', 'ut-drag-name', sName));
+            oRow.appendChild(buildEl('span', 'ut-status-dot ut-status-dot--' + sStatusClass));
+            oRow.appendChild(buildEl('span', 'ut-drag-name', sName));
 
             oListSettingsCustomList.appendChild(oRow);
         });
@@ -1013,6 +1230,7 @@ const runPopupLogic = async () => {
         setupDragAndDrop();
     };
 
+    /** Attaches drag-and-drop event listeners to the custom order list rows */
     const setupDragAndDrop = () => {
 
         let oDragRow = null;
@@ -1073,6 +1291,10 @@ const runPopupLogic = async () => {
         });
     };
 
+    /**
+     * Reads the current custom order from the DOM drag list
+     * @returns {string[]} Array of item keys in their current DOM order
+     */
     const readCustomOrderFromDOM = () => {
 
         const aIds = [];
@@ -1085,6 +1307,7 @@ const runPopupLogic = async () => {
         return aIds;
     };
 
+    /** Saves the list settings modal values and re-renders the affected card */
     const saveListSettings = () => {
 
         if (!sListSettingsCardType) return;
@@ -1113,6 +1336,7 @@ const runPopupLogic = async () => {
         setupCollapsibleCards();
     };
 
+    /** Renders the Docker card with container list, status, and update badges */
     const renderDockerCard = () => {
 
         const bDockerAvailable = oCurrentData.docker !== null && oCurrentData.docker !== undefined;
@@ -1138,12 +1362,12 @@ const runPopupLogic = async () => {
             ? nRunning + ' running / ' + nTotal + ' total' + (nUpdatable > 0 ? ' / ' + nUpdatable + ' update' + (nUpdatable > 1 ? 's' : '') : '')
             : 'unavailable';
 
-        const oRight = el('div', 'ut-card-header-right');
-        oRight.appendChild(el('span', 'ut-card-badge', sBadgeText));
+        const oRight = buildEl('div', 'ut-card-header-right');
+        oRight.appendChild(buildEl('span', 'ut-card-badge', sBadgeText));
 
         if (bDockerAvailable && nTotal > 0) {
 
-            const oGear = el('button', 'ut-card-gear');
+            const oGear = buildEl('button', 'ut-card-gear');
             oGear.dataset.action = 'openListSettings';
             oGear.dataset.cardType = 'docker';
             oGear.title = 'List settings';
@@ -1154,19 +1378,19 @@ const runPopupLogic = async () => {
         oCardDocker.textContent = '';
         oCardDocker.appendChild(buildCardHeader('#ico-docker', 'Docker', null, oRight));
 
-        const oBody = el('div', 'ut-card-body');
+        const oBody = buildEl('div', 'ut-card-body');
         oCardDocker.appendChild(oBody);
 
         if (!bDockerAvailable) {
 
-            oBody.appendChild(el('div', 'ut-detail-row')).appendChild(
-                el('span', 'ut-detail-label', 'Docker service not enabled on this server')
+            oBody.appendChild(buildEl('div', 'ut-detail-row')).appendChild(
+                buildEl('span', 'ut-detail-label', 'Docker service not enabled on this server')
             );
 
         } else if (nTotal === 0) {
 
-            oBody.appendChild(el('div', 'ut-detail-row')).appendChild(
-                el('span', 'ut-detail-label', 'No containers found')
+            oBody.appendChild(buildEl('div', 'ut-detail-row')).appendChild(
+                buildEl('span', 'ut-detail-label', 'No containers found')
             );
 
         } else {
@@ -1213,6 +1437,11 @@ const runPopupLogic = async () => {
 
     };
 
+    /**
+     * Extracts the display name from a Docker container object
+     * @param {Object} pContainer - The container object from the API
+     * @returns {string} The container name or truncated ID
+     */
     const getContainerName = (pContainer) => {
 
         if (pContainer.names && pContainer.names.length > 0) {
@@ -1222,6 +1451,11 @@ const runPopupLogic = async () => {
         return pContainer.id ? pContainer.id.substring(0, 12) : '?';
     };
 
+    /**
+     * Auto-detects the web UI URL for a container from its published ports
+     * @param {Object} pContainer - The container object from the API
+     * @returns {string} The detected URL, or empty string if none found
+     */
     const getAutoDetectedUrl = (pContainer) => {
 
         const aPorts = pContainer.ports || [];
@@ -1250,9 +1484,14 @@ const runPopupLogic = async () => {
         }
     };
 
+    /**
+     * Returns the URL for a container, preferring user override over auto-detected
+     * @param {Object} pContainer - The container object from the API
+     * @returns {string} The container URL (override or auto-detected)
+     */
     const getContainerUrl = (pContainer) => {
 
-        const sKey = getOverrideKey(pContainer.id);
+        const sKey = getOverrideKey(getContainerName(pContainer));
         const sOverride = oDockerUrlOverrides[sKey];
 
         if (sOverride) {
@@ -1262,16 +1501,22 @@ const runPopupLogic = async () => {
         return getAutoDetectedUrl(pContainer);
     };
 
+    /**
+     * Renders a single Docker container row with status, actions, and web UI link
+     * @param {Object} pContainer - The container object from the API
+     * @param {Object} pUpdateMap - Map of container name to update status
+     * @returns {HTMLElement} The container row element
+     */
     const renderContainerRow = (pContainer, pUpdateMap) => {
 
         const sOriginalName = getContainerName(pContainer);
-        const sName = getItemDisplayName(pContainer.id, sOriginalName);
+        const sName = getItemDisplayName(sOriginalName, sOriginalName);
         const bRunning = pContainer.state === 'RUNNING';
         const sStatusClass = bRunning ? 'running' : (pContainer.state === 'PAUSED' ? 'paused' : 'stopped');
         const sCommand = bRunning ? 'stop' : 'start';
         const sWebUi = getContainerUrl(pContainer);
-        const bHasUrlOverride = !!oDockerUrlOverrides[getOverrideKey(pContainer.id)];
-        const bHasNameOverride = !!oItemNameOverrides[getOverrideKey(pContainer.id)];
+        const bHasUrlOverride = !!oDockerUrlOverrides[getOverrideKey(sOriginalName)];
+        const bHasNameOverride = !!oItemNameOverrides[getOverrideKey(sOriginalName)];
         const bGearActive = bHasUrlOverride || bHasNameOverride;
         const sUpdateStatus = pUpdateMap ? pUpdateMap[sOriginalName] : null;
         const bHasUpdate = sUpdateStatus === 'UPDATE_AVAILABLE' || sUpdateStatus === 'REBUILD_READY';
@@ -1320,7 +1565,7 @@ const runPopupLogic = async () => {
         oGearBtn.className = 'ut-item-action' + (bGearActive ? ' ut-item-action-url--active' : '');
         oGearBtn.title = 'Container settings';
         oGearBtn.dataset.action = 'openUrlOverride';
-        oGearBtn.dataset.id = pContainer.id;
+        oGearBtn.dataset.id = sOriginalName;
         oGearBtn.appendChild(createSvgIcon('#ico-settings'));
         oActions.appendChild(oGearBtn);
 
@@ -1345,6 +1590,10 @@ const runPopupLogic = async () => {
         return oRow;
     };
 
+    /**
+     * Binds click handlers to container control and settings buttons
+     * @param {HTMLElement} pContainer - The card element containing the action buttons
+     */
     const bindContainerActions = (pContainer) => {
 
         pContainer.querySelectorAll('[data-action="controlDocker"]').forEach((pBtn) => {
@@ -1389,20 +1638,25 @@ const runPopupLogic = async () => {
         });
     };
 
+    /**
+     * Opens the item settings modal for URL override and name customization
+     * @param {string} pItemId - The item identifier (container name or VM id)
+     * @param {string} pType - The item type ('docker' or 'vm')
+     */
     const openUrlOverrideModal = (pItemId, pType) => {
 
-        sUrlOverrideContainerId = pItemId;
+        sUrlOverrideItemKey = pItemId;
         sItemModalType = pType || 'docker';
 
         const sKey = getOverrideKey(pItemId);
         const sNameOverride = oItemNameOverrides[sKey] || '';
-        let sOriginalName = pItemId.substring(0, 12);
+        let sOriginalName = pItemId;
 
         if (sItemModalType === 'docker') {
 
             const aContainers = oCurrentData?.docker?.containers || [];
-            const oContainer = aContainers.find((pC) => pC.id === pItemId);
-            sOriginalName = oContainer ? getContainerName(oContainer) : sOriginalName;
+            const oContainer = aContainers.find((pC) => getContainerName(pC) === pItemId);
+            sOriginalName = oContainer ? getContainerName(oContainer) : pItemId;
             const sDetected = oContainer ? getAutoDetectedUrl(oContainer) : '';
             const sOverride = oDockerUrlOverrides[sKey] || '';
 
@@ -1428,20 +1682,22 @@ const runPopupLogic = async () => {
         oUrlModalBackdrop.style.display = 'flex';
     };
 
+    /** Closes the item settings modal and clears modal state */
     const closeUrlOverrideModal = () => {
 
         oUrlModalBackdrop.style.display = 'none';
-        sUrlOverrideContainerId = null;
+        sUrlOverrideItemKey = null;
         sItemModalType = null;
     };
 
+    /** Saves the URL override and name customization from the modal, then re-renders */
     const saveUrlOverride = async () => {
 
-        if (!sUrlOverrideContainerId) {
+        if (!sUrlOverrideItemKey) {
             return;
         }
 
-        const sKey = getOverrideKey(sUrlOverrideContainerId);
+        const sKey = getOverrideKey(sUrlOverrideItemKey);
 
         const sCustomName = oItemNameInput.value.trim();
 
@@ -1488,6 +1744,7 @@ const runPopupLogic = async () => {
         setupCollapsibleCards();
     };
 
+    /** Renders the VMs card with VM list, status dots, and control buttons */
     const renderVMsCard = () => {
 
         const bVMsAvailable = oCurrentData.vms !== null && oCurrentData.vms !== undefined;
@@ -1504,12 +1761,12 @@ const runPopupLogic = async () => {
             ? nRunning + ' running / ' + nTotal + ' total'
             : 'unavailable';
 
-        const oVMRight = el('div', 'ut-card-header-right');
-        oVMRight.appendChild(el('span', 'ut-card-badge', sVMBadge));
+        const oVMRight = buildEl('div', 'ut-card-header-right');
+        oVMRight.appendChild(buildEl('span', 'ut-card-badge', sVMBadge));
 
         if (bVMsAvailable && nTotal > 0) {
 
-            const oGear = el('button', 'ut-card-gear');
+            const oGear = buildEl('button', 'ut-card-gear');
             oGear.dataset.action = 'openListSettings';
             oGear.dataset.cardType = 'vms';
             oGear.title = 'List settings';
@@ -1520,19 +1777,19 @@ const runPopupLogic = async () => {
         oCardVMs.textContent = '';
         oCardVMs.appendChild(buildCardHeader('#ico-vm', 'VMs', null, oVMRight));
 
-        const oBody = el('div', 'ut-card-body');
+        const oBody = buildEl('div', 'ut-card-body');
         oCardVMs.appendChild(oBody);
 
         if (!bVMsAvailable) {
 
-            oBody.appendChild(el('div', 'ut-detail-row')).appendChild(
-                el('span', 'ut-detail-label', 'VM service not enabled on this server')
+            oBody.appendChild(buildEl('div', 'ut-detail-row')).appendChild(
+                buildEl('span', 'ut-detail-label', 'VM service not enabled on this server')
             );
 
         } else if (nTotal === 0) {
 
-            oBody.appendChild(el('div', 'ut-detail-row')).appendChild(
-                el('span', 'ut-detail-label', 'No VMs found')
+            oBody.appendChild(buildEl('div', 'ut-detail-row')).appendChild(
+                buildEl('span', 'ut-detail-label', 'No VMs found')
             );
 
         } else {
@@ -1579,6 +1836,11 @@ const runPopupLogic = async () => {
 
     };
 
+    /**
+     * Renders a single VM row with status, name, and action buttons
+     * @param {Object} pVM - The VM domain object from the API
+     * @returns {HTMLElement} The VM row element
+     */
     const renderVMRow = (pVM) => {
 
         const sOriginalName = pVM.name || pVM.id || '?';
@@ -1636,6 +1898,10 @@ const runPopupLogic = async () => {
         return oRow;
     };
 
+    /**
+     * Binds click handlers to VM control and settings buttons
+     * @param {HTMLElement} pContainer - The card element containing the action buttons
+     */
     const bindVMActions = (pContainer) => {
 
         pContainer.querySelectorAll('[data-action="openVmSettings"]').forEach((pBtn) => {
@@ -1680,15 +1946,24 @@ const runPopupLogic = async () => {
         });
     };
 
+    /**
+     * Builds a notification summary row with icon, count, and label
+     * @param {string} pIconRef - Sprite icon reference
+     * @param {string} pIconClass - CSS modifier class for the icon
+     * @param {number} pCount - Notification count
+     * @param {string} pLabel - Description label
+     * @returns {HTMLElement} The notification row element
+     */
     const buildNotifRow = (pIconRef, pIconClass, pCount, pLabel) => {
 
-        const oRow = el('div', 'ut-notif-row');
+        const oRow = buildEl('div', 'ut-notif-row');
         oRow.appendChild(createSvgIcon(pIconRef, 'ut-notif-icon ut-notif-icon--' + pIconClass));
-        oRow.appendChild(el('span', 'ut-notif-count', String(pCount)));
-        oRow.appendChild(el('span', 'ut-notif-label', pLabel));
+        oRow.appendChild(buildEl('span', 'ut-notif-count', String(pCount)));
+        oRow.appendChild(buildEl('span', 'ut-notif-label', pLabel));
         return oRow;
     };
 
+    /** Renders the Notifications card with summary counts and expandable detail list */
     const renderNotificationsCard = () => {
 
         const oNotifs = oCurrentData.notifications?.overview?.unread || {};
@@ -1699,12 +1974,12 @@ const runPopupLogic = async () => {
 
         oCardNotifications.textContent = '';
 
-        const oRight = el('div', 'ut-card-header-right');
-        oRight.appendChild(el('span', 'ut-card-badge', nTotal + ' unread'));
+        const oRight = buildEl('div', 'ut-card-header-right');
+        oRight.appendChild(buildEl('span', 'ut-card-badge', nTotal + ' unread'));
 
         if (nTotal > 0) {
 
-            const oArchiveBtn = el('button', 'ut-notif-header-archive');
+            const oArchiveBtn = buildEl('button', 'ut-notif-header-archive');
             oArchiveBtn.dataset.action = 'archiveAll';
 
             if (sCurrentKeyType === 'readonly') {
@@ -1715,7 +1990,7 @@ const runPopupLogic = async () => {
             }
 
             oArchiveBtn.appendChild(createSvgIcon('#ico-check'));
-            oArchiveBtn.appendChild(el('span', null, 'Archive All'));
+            oArchiveBtn.appendChild(buildEl('span', null, 'Archive All'));
             oRight.appendChild(oArchiveBtn);
         }
 
@@ -1723,17 +1998,17 @@ const runPopupLogic = async () => {
         oHeader.appendChild(createSvgIcon('#ico-chevron', 'ut-icon ut-card-chevron'));
         oCardNotifications.appendChild(oHeader);
 
-        const oBody = el('div', 'ut-card-body');
+        const oBody = buildEl('div', 'ut-card-body');
 
         if (nTotal === 0) {
 
-            oBody.appendChild(el('div', 'ut-detail-row')).appendChild(
-                el('span', 'ut-detail-label', 'No unread notifications')
+            oBody.appendChild(buildEl('div', 'ut-detail-row')).appendChild(
+                buildEl('span', 'ut-detail-label', 'No unread notifications')
             );
 
         } else {
 
-            const oSummary = el('div', 'ut-notif-summary');
+            const oSummary = buildEl('div', 'ut-notif-summary');
 
             if (nAlert > 0) oSummary.appendChild(buildNotifRow('#ico-warning', 'alert', nAlert, 'alert' + (nAlert !== 1 ? 's' : '')));
             if (nWarning > 0) oSummary.appendChild(buildNotifRow('#ico-warning', 'warning', nWarning, 'warning' + (nWarning !== 1 ? 's' : '')));
@@ -1883,6 +2158,7 @@ const runPopupLogic = async () => {
 
     };
 
+    /** Fetches the unread notification list from the server and re-renders the card */
     const fetchNotificationList = () => {
 
         bNotificationsLoading = true;
@@ -1910,6 +2186,10 @@ const runPopupLogic = async () => {
         });
     };
 
+    /**
+     * Binds click handlers to notification archive buttons (individual and bulk)
+     * @param {HTMLElement} pContainer - The card element containing the action buttons
+     */
     const bindNotificationActions = (pContainer) => {
 
         pContainer.querySelectorAll('[data-action="archiveNotification"]').forEach((pBtn) => {
@@ -2001,6 +2281,11 @@ const runPopupLogic = async () => {
         }
     };
 
+    /**
+     * Formats a timestamp into a relative time string (e.g. '5m ago', '2d ago')
+     * @param {string|number} pTimestamp - ISO string or millisecond timestamp
+     * @returns {string} Relative time string, or empty if invalid
+     */
     const formatTimestamp = (pTimestamp) => {
 
         if (!pTimestamp) {
@@ -2035,22 +2320,29 @@ const runPopupLogic = async () => {
         }
     };
 
+    /**
+     * Renders a labeled progress bar with percentage and optional tooltip
+     * @param {string} pLabel - The progress bar label
+     * @param {number} pPercent - The fill percentage (0-100)
+     * @param {string} [pTooltip] - Optional tooltip text for the row
+     * @returns {HTMLElement} The progress bar row element
+     */
     const renderProgressBar = (pLabel, pPercent, pTooltip) => {
 
-        const oRow = el('div', 'ut-progress-row');
+        const oRow = buildEl('div', 'ut-progress-row');
         if (pTooltip) oRow.title = pTooltip;
 
-        oRow.appendChild(el('span', 'ut-progress-label', pLabel));
+        oRow.appendChild(buildEl('span', 'ut-progress-label', pLabel));
 
-        const oBar = el('div', 'ut-progress-bar');
-        const oFill = el('div', 'ut-progress-fill');
+        const oBar = buildEl('div', 'ut-progress-bar');
+        const oFill = buildEl('div', 'ut-progress-fill');
         if (pPercent >= 90) oFill.classList.add('danger');
         else if (pPercent >= 75) oFill.classList.add('warn');
         oFill.style.width = pPercent + '%';
         oBar.appendChild(oFill);
         oRow.appendChild(oBar);
 
-        oRow.appendChild(el('span', 'ut-progress-value', pPercent + '%'));
+        oRow.appendChild(buildEl('span', 'ut-progress-value', pPercent + '%'));
 
         return oRow;
     };
@@ -2107,6 +2399,11 @@ const runPopupLogic = async () => {
         return aParts.join(' ') || '< 1m';
     };
 
+    /**
+     * Formats a byte count into a human-readable string (e.g. '1.5 GB')
+     * @param {number} pBytes - The byte count
+     * @returns {string} Formatted string with appropriate unit
+     */
     const formatBytes = (pBytes) => {
 
         if (!pBytes || pBytes <= 0) {
@@ -2125,6 +2422,7 @@ const runPopupLogic = async () => {
         return nValue.toFixed(nIndex > 0 ? 1 : 0) + ' ' + aUnits[nIndex];
     };
 
+    /** Renders the card order list in settings with checkboxes and drag handles */
     const renderCardOrderList = () => {
 
         const oList = document.getElementById('cardOrderList');
@@ -2133,12 +2431,12 @@ const runPopupLogic = async () => {
         const aOrder = oSettings.cardOrder || DEFAULT_SETTINGS.cardOrder;
         const oVis = oSettings.visibleCards;
 
-        aOrder.forEach((sKey) => {
+        aOrder.forEach((pKey) => {
 
             const oRow = document.createElement('div');
             oRow.className = 'ut-card-order-row';
             oRow.draggable = true;
-            oRow.dataset.card = sKey;
+            oRow.dataset.card = pKey;
 
             const oHandle = document.createElement('span');
             oHandle.className = 'ut-drag-handle';
@@ -2147,17 +2445,17 @@ const runPopupLogic = async () => {
 
             const oCheckbox = document.createElement('input');
             oCheckbox.type = 'checkbox';
-            oCheckbox.checked = oVis[sKey] !== false;
-            oCheckbox.dataset.card = sKey;
+            oCheckbox.checked = oVis[pKey] !== false;
+            oCheckbox.dataset.card = pKey;
             oCheckbox.addEventListener('change', () => {
 
-                oSettings.visibleCards[sKey] = oCheckbox.checked;
+                oSettings.visibleCards[pKey] = oCheckbox.checked;
                 saveStorage();
             });
             oRow.appendChild(oCheckbox);
 
             const oLabel = document.createElement('span');
-            oLabel.textContent = CARD_LABELS[sKey] || sKey;
+            oLabel.textContent = CARD_LABELS[pKey] || pKey;
             oRow.appendChild(oLabel);
 
             oList.appendChild(oRow);
@@ -2166,6 +2464,10 @@ const runPopupLogic = async () => {
         setupCardOrderDrag(oList);
     };
 
+    /**
+     * Attaches drag-and-drop event listeners to the card order list rows
+     * @param {HTMLElement} pList - The card order list container element
+     */
     const setupCardOrderDrag = (pList) => {
 
         let oDragRow = null;
@@ -2226,6 +2528,10 @@ const runPopupLogic = async () => {
         });
     };
 
+    /**
+     * Reads the current card order from the settings DOM
+     * @returns {string[]} Array of card keys in their current DOM order
+     */
     const readCardOrderFromDOM = () => {
 
         const oList = document.getElementById('cardOrderList');
@@ -2240,6 +2546,7 @@ const runPopupLogic = async () => {
         return aOrder;
     };
 
+    /** Opens the settings panel and renders the server list and settings values */
     const openSettings = () => {
 
         oSettingsPanel.style.display = 'block';
@@ -2248,6 +2555,7 @@ const runPopupLogic = async () => {
         applySettingsValues();
     };
 
+    /** Closes the settings panel, saves card order, and resumes auto-refresh */
     const closeSettings = () => {
 
         oSettings.cardOrder = readCardOrderFromDOM();
@@ -2261,34 +2569,36 @@ const runPopupLogic = async () => {
         setupAutoRefresh();
     };
 
+    /** Populates the settings form controls with current setting values */
     const applySettingsValues = () => {
 
         oRefreshInterval.value = String(oSettings.refreshInterval);
         renderCardOrderList();
     };
 
+    /** Renders the server list in the settings panel with edit and delete buttons */
     const renderServerList = () => {
 
         oServerList.textContent = '';
 
         if (aServers.length === 0) {
 
-            oServerList.appendChild(el('div', 'ut-server-list-empty', 'No servers added yet'));
+            oServerList.appendChild(buildEl('div', 'ut-server-list-empty', 'No servers added yet'));
             return;
         }
 
         aServers.forEach((pServer) => {
 
-            const oItem = el('div', 'ut-server-item');
+            const oItem = buildEl('div', 'ut-server-item');
 
-            const oInfo = el('div', 'ut-server-item-info');
-            oInfo.appendChild(el('div', 'ut-server-item-name', pServer.name || 'Unnamed'));
-            oInfo.appendChild(el('div', 'ut-server-item-url', pServer.url));
+            const oInfo = buildEl('div', 'ut-server-item-info');
+            oInfo.appendChild(buildEl('div', 'ut-server-item-name', pServer.name || 'Unnamed'));
+            oInfo.appendChild(buildEl('div', 'ut-server-item-url', pServer.url));
             oItem.appendChild(oInfo);
 
-            const oActions = el('div', 'ut-server-item-actions');
+            const oActions = buildEl('div', 'ut-server-item-actions');
 
-            const oEditBtn = el('button', 'ut-icon-btn edit-server');
+            const oEditBtn = buildEl('button', 'ut-icon-btn edit-server');
             oEditBtn.title = 'Edit';
             oEditBtn.appendChild(createSvgIcon('#ico-edit'));
             oEditBtn.addEventListener('click', () => {
@@ -2298,17 +2608,43 @@ const runPopupLogic = async () => {
             });
             oActions.appendChild(oEditBtn);
 
-            const oDeleteBtn = el('button', 'ut-icon-btn delete');
+            const oDeleteBtn = buildEl('button', 'ut-icon-btn delete');
             oDeleteBtn.title = 'Delete';
             oDeleteBtn.appendChild(createSvgIcon('#ico-trash'));
             oDeleteBtn.addEventListener('click', () => {
 
-                aServers = aServers.filter((pS) => pS.id !== pServer.id);
+                if (!confirm('Delete server "' + (pServer.name || 'Unnamed') + '"? This cannot be undone.')) {
+                    return;
+                }
 
-                if (sActiveServerId === pServer.id && aServers.length > 0) {
+                const sDeletedId = pServer.id;
+                aServers = aServers.filter((pS) => pS.id !== sDeletedId);
+
+                const sPrefix = sDeletedId + '::';
+                [oDockerUrlOverrides, oItemNameOverrides].forEach((pOverrides) => {
+
+                    Object.keys(pOverrides).forEach((pKey) => {
+
+                        if (pKey.startsWith(sPrefix)) {
+                            delete pOverrides[pKey];
+                        }
+                    });
+                });
+
+                chrome.storage.local.get('encryptedKeys', (pResult) => {
+
+                    const oKeys = pResult.encryptedKeys || {};
+                    if (oKeys[sDeletedId]) {
+                        delete oKeys[sDeletedId];
+                        chrome.storage.local.set({encryptedKeys: oKeys});
+                    }
+                });
+
+                if (sActiveServerId === sDeletedId && aServers.length > 0) {
                     sActiveServerId = aServers[0].id;
                 }
 
+                saveOverrides();
                 saveStorage();
                 renderServerList();
             });
@@ -2319,6 +2655,10 @@ const runPopupLogic = async () => {
         });
     };
 
+    /**
+     * Opens the server add/edit form, pre-filling fields if editing
+     * @param {Object} [pServer] - Server object to edit, or undefined for new
+     */
     const openServerForm = (pServer) => {
 
         oServerForm.style.display = 'block';
@@ -2344,31 +2684,31 @@ const runPopupLogic = async () => {
         oServerFormName.focus();
     };
 
+    /** Closes the server form and hides the test result */
     const closeServerForm = () => {
 
         oServerForm.style.display = 'none';
         oTestResult.style.display = 'none';
     };
 
-    const requestHostPermission = (pUrl) => {
+    /**
+     * Requests host permission for the given server URL origin
+     * @param {string} pUrl - The server URL to request permission for
+     * @returns {Promise<boolean>} True if permission was granted
+     */
+    const requestHostPermission = async (pUrl) => {
 
-        return new Promise((resolve) => {
+        try {
 
-            try {
+            const oUrl = new URL(pUrl);
+            const sOrigin = oUrl.origin + '/*';
+            const bGranted = await chrome.permissions.request({origins: [sOrigin]});
+            return !!bGranted;
 
-                const oUrl = new URL(pUrl);
-                const sOrigin = oUrl.origin + '/*';
+        } catch (_) {
 
-                chrome.permissions.request({origins: [sOrigin]}, (pGranted) => {
-
-                    resolve(!!pGranted);
-                });
-
-            } catch (_) {
-
-                resolve(false);
-            }
-        });
+            return false;
+        }
     };
 
     /**
@@ -2438,6 +2778,11 @@ const runPopupLogic = async () => {
         renderServerList();
     };
 
+    /**
+     * Displays a test connection result message
+     * @param {string} pText - The result message
+     * @param {boolean} pSuccess - If true, applies success styling; otherwise error
+     */
     const showTestResult = (pText, pSuccess) => {
 
         oTestResult.textContent = pText;
@@ -2445,6 +2790,7 @@ const runPopupLogic = async () => {
         oTestResult.style.display = 'block';
     };
 
+    /** Sets up the auto-refresh interval timer based on current settings */
     const setupAutoRefresh = () => {
 
         if (nRefreshTimer) {
@@ -2465,6 +2811,13 @@ const runPopupLogic = async () => {
             }, nInterval);
         }
     };
+
+    window.addEventListener('beforeunload', () => {
+
+        if (nRefreshTimer) {
+            clearInterval(nRefreshTimer);
+        }
+    });
 
     oThemeToggle.addEventListener('click', () => {
 

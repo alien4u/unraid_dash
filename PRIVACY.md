@@ -1,6 +1,6 @@
 # Privacy Policy - Unraid Dash
 
-**Last updated:** February 21, 2026
+**Last updated:** March 14, 2026
 
 ## Data Collection
 
@@ -23,11 +23,11 @@ These are stored locally in your browser and are **never transmitted** to any ex
 
 ## API Key Storage
 
-Your Unraid API keys are stored in `chrome.storage.local`, which is the standard browser extension storage mechanism. This data is:
+Your Unraid API keys are encrypted at rest using **AES-256-GCM** via the Web Crypto API before being stored in `chrome.storage.local`. This data is:
 
+- **Encrypted at rest** -- API keys are encrypted with AES-256-GCM before storage
 - **Local only** -- never transmitted outside your device
 - **Isolated per-extension** -- other extensions cannot read it
-- **Stored unencrypted on disk** -- like all `chrome.storage.local` data, the underlying files on your filesystem are not encrypted by the browser. Anyone with direct filesystem access to your browser profile directory could potentially read the stored keys.
 
 For additional security:
 - Use a dedicated, least-privilege API key for this extension

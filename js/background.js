@@ -1,10 +1,12 @@
 const browserAPI = (typeof browser !== 'undefined' && browser.runtime) ? browser : chrome;
 
+/** Generates or retrieves the AES-256-GCM encryption key from storage */
 const getEncryptionKey = async () => {
 
     const oResult = await new Promise((resolve) => browserAPI.storage.local.get(['_ek'], resolve));
 
     if (oResult._ek) {
+        // extractable: false -- import does not need re-export; raw bytes already persisted in _ek
         return crypto.subtle.importKey('raw', new Uint8Array(oResult._ek), 'AES-GCM', false, ['encrypt', 'decrypt']);
     }
 
@@ -15,6 +17,12 @@ const getEncryptionKey = async () => {
     return oKey;
 };
 
+/**
+ * Encrypts a string value using AES-GCM with a random IV
+ * @param {CryptoKey} pKey - The AES-GCM encryption key
+ * @param {string} pValue - The plaintext value to encrypt
+ * @returns {Object} Object containing iv and data arrays
+ */
 const encryptValue = async (pKey, pValue) => {
 
     const aIv = crypto.getRandomValues(new Uint8Array(12));
@@ -23,6 +31,12 @@ const encryptValue = async (pKey, pValue) => {
     return {iv: Array.from(aIv), data: Array.from(new Uint8Array(aData))};
 };
 
+/**
+ * Decrypts an AES-GCM encrypted value back to a string
+ * @param {CryptoKey} pKey - The AES-GCM encryption key
+ * @param {Object} pEncrypted - Object with iv and data arrays from encryptValue
+ * @returns {string} The decrypted plaintext value
+ */
 const decryptValue = async (pKey, pEncrypted) => {
 
     const aDecrypted = await crypto.subtle.decrypt(
@@ -103,6 +117,7 @@ const executeGraphQL = async (pUrl, pApiKey, pQuery, pVariables) => {
     return oJson.data;
 };
 
+/** Retrieves all servers from storage with their decrypted API keys attached */
 const getServersWithKeys = async () => {
 
     const oLocal = await new Promise((resolve) => {
@@ -142,6 +157,11 @@ const getServersWithKeys = async () => {
     }));
 };
 
+/**
+ * Retrieves a single server by ID with its decrypted API key
+ * @param {string} pServerId - The server identifier
+ * @returns {Object|null} The server object or null if not found
+ */
 const getServerById = async (pServerId) => {
 
     const aServers = await getServersWithKeys();
@@ -265,6 +285,11 @@ mutation ArchiveAll {
   archiveAll { unread { total } }
 }`;
 
+/**
+ * Determines the API key permission level from the Me query response
+ * @param {Object} pMeData - The response from the QUERY_ME GraphQL query
+ * @returns {string} Either 'admin' or 'readonly'
+ */
 const detectKeyType = (pMeData) => {
 
     if (!pMeData || !pMeData.me) {
@@ -286,6 +311,11 @@ const detectKeyType = (pMeData) => {
     return bCanMutate ? 'admin' : 'readonly';
 };
 
+/**
+ * Checks whether an error message string indicates a permissions issue
+ * @param {string} pMsg - The error message to check
+ * @returns {boolean}
+ */
 const isPermissionMsg = (pMsg) => {
 
     const sLower = pMsg.toLowerCase();
@@ -295,8 +325,18 @@ const isPermissionMsg = (pMsg) => {
            sLower.includes('access denied') || sLower.includes('auth_error');
 };
 
+/**
+ * Checks whether an Error object represents a permissions issue
+ * @param {Error} pErr - The error to check
+ * @returns {boolean}
+ */
 const isPermissionError = (pErr) => isPermissionMsg(pErr.message || '');
 
+/**
+ * Checks whether a GraphQL response contains permission-related errors
+ * @param {Object} pData - The GraphQL response data (may contain _errors array)
+ * @returns {boolean}
+ */
 const hasPermissionErrors = (pData) => {
 
     if (!pData || !pData._errors) {
@@ -391,6 +431,11 @@ browserAPI.runtime.onMessage.addListener((pMessage, pSender, pFnSendResponse) =>
     }
 });
 
+/**
+ * Fetches all dashboard data sections for a single server via parallel GraphQL queries
+ * @param {Object} pServer - Server object with url and apiKey properties
+ * @returns {Object} Merged dashboard data from all query sections
+ */
 const fetchServerDashboard = async (pServer) => {
 
     const fnDockerQuery = async () => {
@@ -476,6 +521,11 @@ const fetchServerDashboard = async (pServer) => {
     return oData;
 };
 
+/**
+ * Handles the fetchDashboard message -- resolves server, detects key type, returns dashboard data
+ * @param {Object} pMessage - Message object with serverId property
+ * @returns {Object} Response with data, serverId, and keyType
+ */
 const handleFetchDashboard = async (pMessage) => {
 
     const oServer = await getServerById(pMessage.serverId);
@@ -505,6 +555,7 @@ const handleFetchDashboard = async (pMessage) => {
     return {data: oData, serverId: oServer.id, keyType: sKeyType};
 };
 
+/** Fetches dashboard data for all enabled servers in parallel */
 const handleFetchAllServers = async () => {
 
     const aServers = (await getServersWithKeys()).filter((pS) => pS.enabled !== false && pS.apiKey);
@@ -531,6 +582,11 @@ const handleFetchAllServers = async () => {
     return {results: aResults};
 };
 
+/**
+ * Tests connectivity to a server and detects the API key permission level
+ * @param {Object} pServer - Server object with url and apiKey properties
+ * @returns {Object} Response with success, name, version, and keyType
+ */
 const handleTestConnection = async (pServer) => {
 
     if (!pServer || !pServer.url || !pServer.apiKey) {
@@ -565,6 +621,11 @@ const handleTestConnection = async (pServer) => {
     };
 };
 
+/**
+ * Starts or stops a Docker container via GraphQL mutation
+ * @param {Object} pMessage - Message with serverId, containerId, and command ('start'|'stop')
+ * @returns {Object} Response with success flag or error
+ */
 const handleControlDocker = async (pMessage) => {
 
     const oServer = await getServerById(pMessage.serverId);
@@ -595,6 +656,11 @@ const handleControlDocker = async (pMessage) => {
     }
 };
 
+/**
+ * Starts or stops a VM via GraphQL mutation
+ * @param {Object} pMessage - Message with serverId, vmId, and command ('start'|'stop')
+ * @returns {Object} Response with success flag or error
+ */
 const handleControlVM = async (pMessage) => {
 
     const oServer = await getServerById(pMessage.serverId);
@@ -625,6 +691,11 @@ const handleControlVM = async (pMessage) => {
     }
 };
 
+/**
+ * Fetches notifications for a server with optional filter
+ * @param {Object} pMessage - Message with serverId and optional filter object
+ * @returns {Object} Response with notification list data
+ */
 const handleFetchNotifications = async (pMessage) => {
 
     const oServer = await getServerById(pMessage.serverId);
@@ -639,6 +710,11 @@ const handleFetchNotifications = async (pMessage) => {
     return {success: true, data: oData.notifications?.list || []};
 };
 
+/**
+ * Archives a single notification by ID
+ * @param {Object} pMessage - Message with serverId and notificationId
+ * @returns {Object} Response with success flag or error
+ */
 const handleArchiveNotification = async (pMessage) => {
 
     const oServer = await getServerById(pMessage.serverId);
@@ -667,6 +743,11 @@ const handleArchiveNotification = async (pMessage) => {
     }
 };
 
+/**
+ * Archives all notifications for a server
+ * @param {Object} pMessage - Message with serverId
+ * @returns {Object} Response with success flag or error
+ */
 const handleArchiveAll = async (pMessage) => {
 
     const oServer = await getServerById(pMessage.serverId);
@@ -695,6 +776,11 @@ const handleArchiveAll = async (pMessage) => {
     }
 };
 
+/**
+ * Categorizes an error into a standardized error code string for the UI
+ * @param {Error} pErr - The error to categorize
+ * @returns {string} A categorized error code (e.g., 'AUTH_ERROR', 'UNREACHABLE', 'TIMEOUT')
+ */
 const categorizeError = (pErr) => {
 
     const sMsg = pErr.message || '';
@@ -722,6 +808,7 @@ const categorizeError = (pErr) => {
     return 'UNKNOWN: ' + sMsg;
 };
 
+/** Polls all enabled servers for unread notification counts and updates the extension badge */
 const updateBadge = async () => {
 
     try {
