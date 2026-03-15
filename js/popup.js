@@ -1174,10 +1174,10 @@ const runPopupLogic = async () => {
 
         if (pCardType === 'docker') {
             aItems = oCurrentData?.docker?.containers || [];
-            fnName = getContainerName;
+            fnName = (pC) => getItemDisplayName(getContainerName(pC), getContainerName(pC));
         } else {
             aItems = oCurrentData?.vms?.domains || [];
-            fnName = getVMName;
+            fnName = (pV) => getItemDisplayName(pV.id, getVMName(pV));
         }
 
         const aExistingOrder = oSettings.listSettings[pCardType].customOrder;
@@ -1344,7 +1344,8 @@ const runPopupLogic = async () => {
         const nRunning = aContainers.filter((pC) => pC.state === 'RUNNING').length;
         const nTotal = aContainers.length;
 
-        const aSorted = sortListItems(aContainers, 'docker', getContainerName);
+        const fnDisplayName = (pC) => getItemDisplayName(getContainerName(pC), getContainerName(pC));
+        const aSorted = sortListItems(aContainers, 'docker', fnDisplayName);
         const nMaxVisible = getVisibleCount('docker', aSorted.length);
         const nVisible = bDockerExpanded ? aSorted.length : Math.min(aSorted.length, nMaxVisible);
         const bShowMore = aSorted.length > nMaxVisible;
@@ -1752,7 +1753,8 @@ const runPopupLogic = async () => {
         const nRunning = aVMs.filter((pV) => pV.state === 'RUNNING').length;
         const nTotal = aVMs.length;
 
-        const aSorted = sortListItems(aVMs, 'vms', getVMName);
+        const fnDisplayName = (pV) => getItemDisplayName(pV.id, getVMName(pV));
+        const aSorted = sortListItems(aVMs, 'vms', fnDisplayName);
         const nMaxVisible = getVisibleCount('vms', aSorted.length);
         const nVisible = bVMsExpanded ? aSorted.length : Math.min(aSorted.length, nMaxVisible);
         const bShowMore = aSorted.length > nMaxVisible;
