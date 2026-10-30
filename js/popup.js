@@ -36,7 +36,8 @@ const runPopupLogic = async () => {
         listSettings: {
             docker: {...DEFAULT_LIST_SETTINGS},
             vms: {...DEFAULT_LIST_SETTINGS}
-        }
+        },
+        customOrders: {}
     };
 
     const oFooterVersion = document.getElementById('footerVersion');
@@ -54,9 +55,51 @@ const runPopupLogic = async () => {
         PERMISSION_DENIED: 'This API key does not have permission. Use an admin API key for full control.'
     };
 
+    const PENDING_LABELS = {
+        start: 'Starting...',
+        stop: 'Stopping...',
+        pause: 'Pausing...',
+        resume: 'Resuming...',
+        restart: 'Restarting...',
+        update: 'Updating...'
+    };
+
+    /* A polled action is done once a status check reports one of these states.
+       Restart and update are resolved differently (runItemAction, runStatusCheck). */
+    const TARGET_STATES = {
+        start: ['RUNNING'],
+        resume: ['RUNNING'],
+        pause: ['PAUSED'],
+        stop: ['EXITED', 'SHUTOFF', 'SHUTDOWN']
+    };
+
+    const TOGGLE_BUTTONS = {
+        start: {sTitle: 'Start', sIcon: '#ico-play'},
+        stop: {sTitle: 'Stop', sIcon: '#ico-stop'},
+        resume: {sTitle: 'Resume', sIcon: '#ico-resume'}
+    };
+
+    const MENU_ITEMS = {
+        restart: {sTitle: 'Restart', sIcon: '#ico-restart'},
+        pause: {sTitle: 'Pause', sIcon: '#ico-pause'}
+    };
+
+    const TEMP_UNITS = {CELSIUS: '\u00B0C', FAHRENHEIT: '\u00B0F'};
+    const UPDATE_STATUSES = ['UPDATE_AVAILABLE', 'REBUILD_READY'];
+
+    const POLL_ACTION_MS = 3000;
+    const POLL_ACTION_MAX = 20;
+    const POLL_UPDATE_MS = 10000;
+    const UPDATE_CAP_MS = 600000;
+    const RESTART_CAP_MS = 60000;
+    const NOTE_ERROR_MS = 8000;
+    const NOTE_SUCCESS_MS = 5000;
+    const SUMMARY_MS = 8000;
+
     const oSpinner = document.getElementById('spinner');
     const oMessage = document.getElementById('message');
     const oDashboard = document.getElementById('dashboard');
+    const oStaleStrip = document.getElementById('staleStrip');
     const oServerTabs = document.getElementById('serverTabs');
     const oSettingsPanel = document.getElementById('settingsPanel');
 
@@ -127,6 +170,27 @@ const runPopupLogic = async () => {
     let sCurrentKeyType = null;
     let bOverridesMigrated = false;
 
+    /* Async callbacks and timers compare these with the values captured at dispatch
+       and drop their UI effect when the view or request has moved on */
+    let nViewGen = 0;
+    let nFetchGen = 0;
+    let nNotifGen = 0;
+
+    let nLastDataTime = 0;
+    let oFeatures = {};
+
+    /* Keyed by server ID: row actions in progress, inline row messages, update operations
+       (mirror of storage pendingUpdates), Update all summaries, features the server rejected */
+    let oPending = {};
+    let oRowNotes = {};
+    let oUpdateOps = {};
+    let oUpdateSummary = {};
+    let oUnsupported = {};
+    let oPollTimers = {};
+    let oPollBusy = {};
+    let bUpdateAllConfirm = false;
+    let oOpenMenu = null;
+
     /**
      * Migrates override keys from container IDs to container names
      * @param {Array} pContainers - Docker containers from the API response
@@ -170,6 +234,7 @@ const runPopupLogic = async () => {
             });
         });
 
+        /* Only the pre-1.3.0 shared order can still hold container IDs */
         const aDockerOrder = oSettings.listSettings?.docker?.customOrder || [];
         if (aDockerOrder.length > 0) {
             const aMigrated = aDockerOrder.map((pId) => oIdToName.get(pId) || pId);
@@ -238,7 +303,10 @@ const runPopupLogic = async () => {
     const loadStorage = async () => {
 
         const oResult = await new Promise((resolve) => {
-            chrome.storage.local.get(['servers', 'settings', 'dockerUrlOverrides', 'itemNameOverrides', 'encryptedKeys'], resolve);
+            chrome.storage.local.get(
+                ['servers', 'settings', 'dockerUrlOverrides', 'itemNameOverrides', 'encryptedKeys', 'pendingUpdates'],
+                resolve
+            );
         });
 
         const oEncKeys = oResult.encryptedKeys || {};
@@ -275,11 +343,19 @@ const runPopupLogic = async () => {
             }
         }
 
-        aServers = (oResult.servers || []).map((pS) => ({
-            ...pS,
-            apiKey: oDecrypted[pS.id] || pS.apiKey || null
-        }));
+        aServers = (oResult.servers || []).map((pS) => {
+
+            const oServer = {...pS, apiKey: oDecrypted[pS.id] || pS.apiKey || null};
+
+            if (pS.prev) {
+                oServer.prev = {...pS.prev, apiKey: oDecrypted[pS.id + '::prev'] || pS.prev.apiKey || null};
+            }
+
+            return oServer;
+        });
         oSettings = {...DEFAULT_SETTINGS, ...oResult.settings};
+        oSettings.customOrders = {...(oResult.settings?.customOrders || {})};
+        oUpdateOps = oResult.pendingUpdates || {};
 
         oSettings.visibleCards = {
             ...DEFAULT_SETTINGS.visibleCards,
@@ -335,6 +411,19 @@ const runPopupLogic = async () => {
             }
 
             const {apiKey, ...oRest} = pS;
+
+            /* Snapshot kept while a save waits for its host permission (resolveStagedServer) */
+            if (pS.prev) {
+
+                const {apiKey: sPrevKey, ...oPrevRest} = pS.prev;
+
+                if (sPrevKey) {
+                    oPlainKeys[pS.id + '::prev'] = sPrevKey;
+                }
+
+                oRest.prev = oPrevRest;
+            }
+
             return oRest;
         });
 
@@ -536,7 +625,29 @@ const runPopupLogic = async () => {
             return 'An unknown error occurred.';
         }
 
-        return ERROR_MESSAGES[pError] || pError;
+        if (ERROR_MESSAGES[pError]) {
+            return ERROR_MESSAGES[pError];
+        }
+
+        const aHttp = /^HTTP_(\d{3})/.exec(pError);
+
+        if ((aHttp && aHttp[1] === '400') || pError.startsWith('UNSUPPORTED')) {
+            return 'The server rejected the request (API version mismatch?).';
+        }
+
+        if (aHttp && aHttp[1].startsWith('5')) {
+            return 'Server error (' + aHttp[1] + '). Try again later.';
+        }
+
+        if (aHttp) {
+            return 'Unexpected server response (' + aHttp[1] + ').';
+        }
+
+        if (pError.startsWith('GQL_ERROR: ')) {
+            return pError.substring('GQL_ERROR: '.length);
+        }
+
+        return pError;
     };
 
     /** Renders the server tab bar, hidden when only one server is enabled */
@@ -576,10 +687,7 @@ const runPopupLogic = async () => {
 
         sActiveServerId = pServerId;
         oSettings.activeServerId = pServerId;
-        bDockerExpanded = false;
-        bVMsExpanded = false;
-        bNotificationsExpanded = false;
-        aNotificationItems = [];
+        resetServerView();
 
         saveStorage();
         renderServerTabs();
@@ -587,8 +695,34 @@ const runPopupLogic = async () => {
     };
 
     /**
-     * Fetches dashboard data from the active server and renders the UI
-     * @param {boolean} [pSilent] - If true, suppresses the loading spinner on fetch
+     * Clears the per-view state when the active server changes, so late responses,
+     * status checks and timers of the previous server cannot touch the new view
+     */
+    const resetServerView = () => {
+
+        nViewGen++;
+        nNotifGen++;
+
+        Object.values(oPollTimers).forEach((pTimer) => clearTimeout(pTimer));
+        oPollTimers = {};
+        oPollBusy = {};
+
+        oCurrentData = null;
+        oFeatures = {};
+        bDockerExpanded = false;
+        bVMsExpanded = false;
+        bNotificationsExpanded = false;
+        bNotificationsLoading = false;
+        bUpdateAllConfirm = false;
+        aNotificationItems = [];
+        oStaleStrip.style.display = 'none';
+        closeMoreMenu(false);
+    };
+
+    /**
+     * Fetches dashboard data from the active server and renders the UI. Errors show the full-panel
+     * message when no data is loaded for this server yet, otherwise a strip above the kept cards.
+     * @param {boolean} [pSilent] - If true, suppresses the loading spinner when data is already shown
      */
     const fetchAndRender = (pSilent) => {
 
@@ -609,45 +743,65 @@ const runPopupLogic = async () => {
             return;
         }
 
-        if (!pSilent) {
+        if (!pSilent || !oCurrentData) {
             showSpinner();
         }
 
+        nFetchGen++;
+        const nGen = nFetchGen;
+        const sReqServerId = sActiveServerId;
+
         chrome.runtime.sendMessage({
             action: 'fetchDashboard',
-            serverId: sActiveServerId
+            serverId: sReqServerId
         }, (pResponse) => {
 
-            if (chrome.runtime.lastError) {
+            const sLastError = chrome.runtime.lastError?.message;
 
-                showMessageText('Extension error: ' + chrome.runtime.lastError.message, true);
+            if (nGen !== nFetchGen || sReqServerId !== sActiveServerId) {
                 return;
             }
 
-            if (!pResponse) {
+            let sError = pResponse?.error;
 
-                showMessageText('No response from background service.', true);
-                return;
+            if (sLastError) {
+                sError = 'Extension error: ' + sLastError;
+            } else if (!pResponse) {
+                sError = 'No response from background service.';
             }
 
-            if (pResponse.error) {
+            if (sError) {
 
-                if (pResponse.error === 'KEY_MISSING') {
-                    showMessageText(getErrorMessage(pResponse.error), true);
+                if (oCurrentData && sError !== 'KEY_MISSING') {
+
+                    const oTime = new Date(nLastDataTime);
+                    const sTime = String(oTime.getHours()).padStart(2, '0') + ':' +
+                        String(oTime.getMinutes()).padStart(2, '0');
+
+                    oStaleStrip.textContent = 'Last refresh failed: ' + getErrorMessage(sError).replace(/\.$/, '') +
+                        '. Showing data from ' + sTime + '.';
+                    oStaleStrip.style.display = '';
+
+                    if (oSettingsPanel.style.display === 'none') {
+                        showDashboard();
+                    }
+
                     return;
                 }
 
-                if (!pSilent) {
-                    showMessageText(getErrorMessage(pResponse.error), true);
-                }
-
+                showMessageText(getErrorMessage(sError), true);
                 return;
             }
 
             oCurrentData = pResponse.data;
             sCurrentKeyType = pResponse.keyType || 'admin';
+            oFeatures = pResponse.features || {};
+            nLastDataTime = Date.now();
+            oStaleStrip.style.display = 'none';
             migrateOverrideKeys(oCurrentData?.docker?.containers);
             renderDashboard();
+
+            ['docker', 'vm', 'update'].forEach((pKind) => scheduleStatusCheck(pKind));
         });
     };
 
@@ -872,6 +1026,33 @@ const runPopupLogic = async () => {
             oBody.appendChild(buildDetailRow('Network', oNet.ipv4));
         }
 
+        /* Values are shown in the unit the API reports; Kelvin/Rankine or a missing unit hide the row */
+        const oTempSummary = oCurrentData.temperature?.summary;
+        const sTempUnit = TEMP_UNITS[oTempSummary?.hottest?.current?.unit];
+
+        if (sTempUnit) {
+
+            const oTempRow = buildEl('div', 'ut-detail-row');
+            oTempRow.appendChild(buildEl('span', 'ut-detail-label', 'Temp'));
+
+            const oTempVal = buildEl('span', 'ut-detail-value',
+                'avg ' + Math.round(oTempSummary.average) + sTempUnit +
+                ' - hottest ' + Math.round(oTempSummary.hottest.current.value) + sTempUnit);
+
+            if (oTempSummary.warningCount > 0) {
+                oTempVal.appendChild(document.createTextNode(', '));
+                oTempVal.appendChild(buildEl('span', 'ut-text-warning', oTempSummary.warningCount + ' warning'));
+            }
+
+            if (oTempSummary.criticalCount > 0) {
+                oTempVal.appendChild(document.createTextNode(', '));
+                oTempVal.appendChild(buildEl('span', 'ut-text-error', oTempSummary.criticalCount + ' critical'));
+            }
+
+            oTempRow.appendChild(oTempVal);
+            oBody.appendChild(oTempRow);
+        }
+
         const oMetricsDiv = document.createElement('div');
         oMetricsDiv.style.marginTop = '8px';
         oMetricsDiv.appendChild(renderProgressBar('CPU', nCPUPercent));
@@ -955,6 +1136,56 @@ const runPopupLogic = async () => {
 
         oBody.appendChild(buildDetailRow('Parity', nParityOk + ' active'));
 
+        /* The API fills status, progress, speed and date; errors/correcting may be null */
+        const oParity = oArray.parityCheckStatus;
+
+        if (oParity && sState === 'STARTED') {
+
+            const nProgress = oParity.progress || 0;
+            const sCorrecting = oParity.correcting ? ' (correcting)' : '';
+
+            if (oParity.status === 'RUNNING') {
+
+                const oCheckRow = buildEl('div', 'ut-detail-row');
+                oCheckRow.appendChild(buildEl('span', 'ut-detail-label', 'Parity check'));
+
+                const oCheckVal = buildEl('span', 'ut-detail-value',
+                    nProgress + '%' + (oParity.speed ? ' - ' + oParity.speed + ' MB/s' : '') + sCorrecting);
+
+                if (oParity.errors > 0) {
+                    oCheckVal.appendChild(document.createTextNode(', '));
+                    oCheckVal.appendChild(buildEl('span', 'ut-text-error',
+                        oParity.errors + ' error' + (oParity.errors !== 1 ? 's' : '')));
+                }
+
+                oCheckRow.appendChild(oCheckVal);
+                oBody.appendChild(oCheckRow);
+                oBody.appendChild(renderProgressBar('', nProgress, null, true));
+
+            } else if (oParity.status === 'PAUSED') {
+
+                oBody.appendChild(buildDetailRow('Parity check', 'paused at ' + nProgress + '%' + sCorrecting));
+
+            } else if (oParity.status === 'NEVER_RUN') {
+
+                oBody.appendChild(buildEl('div', 'ut-detail-row')).appendChild(
+                    buildEl('span', 'ut-detail-label', 'No parity check run yet')
+                );
+
+            } else {
+
+                const oResults = {COMPLETED: 'Completed', CANCELLED: 'Cancelled', FAILED: 'Failed'};
+                let sResult = oResults[oParity.status] || oParity.status;
+
+                if (oParity.status === 'COMPLETED' && typeof oParity.errors === 'number') {
+                    sResult += ', ' + oParity.errors + ' error' + (oParity.errors !== 1 ? 's' : '');
+                }
+
+                const sDate = formatTimestamp(oParity.date);
+                oBody.appendChild(buildDetailRow('Last check', (sDate ? sDate + ' - ' : '') + sResult));
+            }
+        }
+
         const oParitySection = renderDiskSection('Parity', aParities);
         if (oParitySection) oBody.appendChild(oParitySection);
 
@@ -985,13 +1216,43 @@ const runPopupLogic = async () => {
         oSection.appendChild(buildEl('div', 'ut-disk-section-title', pTitle));
 
         const oGrid = buildEl('div', 'ut-disk-grid');
+        const oThresholds = oCurrentData.diskTempThresholds || {};
+        const oRotational = new Set(oThresholds.rotationalIds || []);
 
         aActive.forEach((pDisk) => {
 
-            const sStatus = getDiskStatusClass(pDisk);
+            let sStatus = getDiskStatusClass(pDisk);
+            let sTempClass = '';
             const sName = pDisk.name || '?';
 
+            /* Thresholds are the HDD defaults, so SSD/NVMe chips keep the plain coloring */
+            const bRotational = oRotational.has(pDisk.id);
+            const bWarnSet = bRotational && typeof oThresholds.warning === 'number';
+            const bCritSet = bRotational && typeof oThresholds.critical === 'number';
+
+            /* An existing error (red) outranks temperature; a sleeping disk (no temp) keeps its color */
+            if (sStatus !== 'error' && pDisk.temp != null) {
+
+                if (bCritSet && pDisk.temp >= oThresholds.critical) {
+                    sStatus = 'error';
+                    sTempClass = ' ut-text-error';
+                } else if (bWarnSet && pDisk.temp >= oThresholds.warning) {
+                    sStatus = 'warning';
+                    sTempClass = ' ut-text-warning';
+                }
+            }
+
             let sTooltip = pDisk.temp != null ? pDisk.temp + '\u00B0C' : '';
+
+            if (sTooltip && (bWarnSet || bCritSet)) {
+
+                const aLimits = [];
+
+                if (bWarnSet) aLimits.push('warn ' + oThresholds.warning + '\u00B0');
+                if (bCritSet) aLimits.push('crit ' + oThresholds.critical + '\u00B0');
+
+                sTooltip += ' (' + aLimits.join(', ') + ')';
+            }
 
             if (pDisk.temp == null && pDisk.isSpinning === false) {
                 sTooltip = 'Standby';
@@ -1008,7 +1269,7 @@ const runPopupLogic = async () => {
             oChip.appendChild(document.createTextNode(sName));
 
             if (pDisk.temp != null) {
-                oChip.appendChild(buildEl('span', 'ut-disk-chip-temp', pDisk.temp + '\u00B0C'));
+                oChip.appendChild(buildEl('span', 'ut-disk-chip-temp' + sTempClass, pDisk.temp + '\u00B0C'));
             }
 
             oGrid.appendChild(oChip);
@@ -1042,6 +1303,18 @@ const runPopupLogic = async () => {
     };
 
     /**
+     * Returns the custom order of a card for the active server. A server without its own order
+     * starts from the shared pre-1.3.0 order; keys of items it does not have are ignored when sorting.
+     * @param {string} pCardType - The card type ('docker' or 'vms')
+     * @returns {string[]} Item keys in custom order
+     */
+    const getCustomOrder = (pCardType) => {
+
+        return oSettings.customOrders[sActiveServerId]?.[pCardType] ||
+            oSettings.listSettings[pCardType].customOrder || [];
+    };
+
+    /**
      * Sorts list items (containers or VMs) according to the card's sort mode
      * @param {Array} pItems - The items to sort
      * @param {string} pCardType - The card type ('docker' or 'vms')
@@ -1065,7 +1338,7 @@ const runPopupLogic = async () => {
 
         } else if (sSortMode === 'custom') {
 
-            const aOrder = oLS.customOrder;
+            const aOrder = getCustomOrder(pCardType);
             const oIndexMap = new Map();
             aOrder.forEach((pKey, pIdx) => oIndexMap.set(pKey, pIdx));
 
@@ -1180,7 +1453,7 @@ const runPopupLogic = async () => {
             fnName = (pV) => getItemDisplayName(pV.id, getVMName(pV));
         }
 
-        const aExistingOrder = oSettings.listSettings[pCardType].customOrder;
+        const aExistingOrder = getCustomOrder(pCardType);
         const oKeySet = new Set(aItems.map((pI) => getItemSortKey(pI, pCardType)));
 
         const aOrdered = [];
@@ -1319,7 +1592,10 @@ const runPopupLogic = async () => {
         oLS.visibleCount = parseInt(oListSettingsCount.value, 10);
 
         if (oLS.sortMode === 'custom') {
-            oLS.customOrder = readCustomOrderFromDOM();
+            oSettings.customOrders[sActiveServerId] = {
+                ...oSettings.customOrders[sActiveServerId],
+                [sCardType]: readCustomOrderFromDOM()
+            };
         }
 
         closeListSettingsModal();
@@ -1339,6 +1615,9 @@ const runPopupLogic = async () => {
     /** Renders the Docker card with container list, status, and update badges */
     const renderDockerCard = () => {
 
+        closeMoreMenu(false);
+
+        const sServerId = sActiveServerId;
         const bDockerAvailable = oCurrentData.docker !== null && oCurrentData.docker !== undefined;
         const aContainers = oCurrentData.docker?.containers || [];
         const nRunning = aContainers.filter((pC) => pC.state === 'RUNNING').length;
@@ -1357,7 +1636,11 @@ const runPopupLogic = async () => {
             oUpdateMap[pS.name] = pS.updateStatus;
         });
 
-        const nUpdatable = aUpdateStatuses.filter((pS) => pS.updateStatus === 'UPDATE_AVAILABLE' || pS.updateStatus === 'REBUILD_READY').length;
+        const aUpdatable = aContainers.filter((pC) => UPDATE_STATUSES.includes(oUpdateMap[getContainerName(pC)]));
+        const nUpdatable = aUpdatable.length;
+        const oUpdateOp = oUpdateOps[sServerId];
+        const sUpdateSummary = oUpdateSummary[sServerId];
+        const bCanUpdate = sCurrentKeyType !== 'readonly' && oFeatures.updates && !oUnsupported[sServerId]?.update;
 
         const sBadgeText = bDockerAvailable
             ? nRunning + ' running / ' + nTotal + ' total' + (nUpdatable > 0 ? ' / ' + nUpdatable + ' update' + (nUpdatable > 1 ? 's' : '') : '')
@@ -1365,6 +1648,33 @@ const runPopupLogic = async () => {
 
         const oRight = buildEl('div', 'ut-card-header-right');
         oRight.appendChild(buildEl('span', 'ut-card-badge', sBadgeText));
+
+        if (sUpdateSummary) {
+
+            oRight.appendChild(buildEl('span', 'ut-card-badge', sUpdateSummary));
+
+        } else if (oUpdateOp) {
+
+            const nUpdating = Object.keys(oUpdateOp.items).length;
+            const oUpdatingBtn = buildEl('button', 'ut-btn-sm', 'Updating ' + nUpdating + '...');
+            oUpdatingBtn.disabled = true;
+            oRight.appendChild(oUpdatingBtn);
+
+        } else if (bCanUpdate && nUpdatable > 0) {
+
+            const oUpdateAllBtn = buildEl('button', 'ut-btn-sm');
+            oUpdateAllBtn.title = 'Update all containers with an update';
+            oUpdateAllBtn.appendChild(createSvgIcon('#ico-update'));
+            oUpdateAllBtn.appendChild(buildEl('span', null, 'Update all (' + nUpdatable + ')'));
+
+            oUpdateAllBtn.addEventListener('click', () => {
+
+                bUpdateAllConfirm = true;
+                rerenderCard(sServerId, 'docker');
+            });
+
+            oRight.appendChild(oUpdateAllBtn);
+        }
 
         if (bDockerAvailable && nTotal > 0) {
 
@@ -1395,6 +1705,32 @@ const runPopupLogic = async () => {
             );
 
         } else {
+
+            if (bUpdateAllConfirm && bCanUpdate && !oUpdateOp && nUpdatable > 0) {
+
+                const oConfirm = buildEl('div', 'ut-confirm');
+                oConfirm.appendChild(buildEl('span', 'ut-confirm-text',
+                    'Update ' + nUpdatable + ' container' + (nUpdatable !== 1 ? 's' : '') + '? They will restart.'));
+
+                const oConfirmBtn = buildEl('button', 'ut-btn ut-btn-primary', 'Update');
+                const oCancelBtn = buildEl('button', 'ut-btn ut-btn-ghost', 'Cancel');
+
+                oConfirmBtn.addEventListener('click', () => {
+
+                    bUpdateAllConfirm = false;
+                    startUpdate(aUpdatable, true);
+                });
+
+                oCancelBtn.addEventListener('click', () => {
+
+                    bUpdateAllConfirm = false;
+                    rerenderCard(sServerId, 'docker');
+                });
+
+                oConfirm.appendChild(oConfirmBtn);
+                oConfirm.appendChild(oCancelBtn);
+                oBody.appendChild(oConfirm);
+            }
 
             const oFrag = document.createDocumentFragment();
 
@@ -1486,9 +1822,24 @@ const runPopupLogic = async () => {
     };
 
     /**
-     * Returns the URL for a container, preferring user override over auto-detected
+     * Returns the container WebUI URL resolved by the server from the template (API 4.30+),
+     * falling back to port detection
      * @param {Object} pContainer - The container object from the API
-     * @returns {string} The container URL (override or auto-detected)
+     * @returns {string} The detected URL, or empty string if none found
+     */
+    const getDetectedUrl = (pContainer) => {
+
+        if (pContainer.webUiUrl && /^https?:\/\//i.test(pContainer.webUiUrl)) {
+            return pContainer.webUiUrl;
+        }
+
+        return getAutoDetectedUrl(pContainer);
+    };
+
+    /**
+     * Returns the URL for a container: user override, then template WebUI, then port detection
+     * @param {Object} pContainer - The container object from the API
+     * @returns {string} The container URL, or empty string if none
      */
     const getContainerUrl = (pContainer) => {
 
@@ -1499,7 +1850,7 @@ const runPopupLogic = async () => {
             return sOverride;
         }
 
-        return getAutoDetectedUrl(pContainer);
+        return getDetectedUrl(pContainer);
     };
 
     /**
@@ -1513,14 +1864,28 @@ const runPopupLogic = async () => {
         const sOriginalName = getContainerName(pContainer);
         const sName = getItemDisplayName(sOriginalName, sOriginalName);
         const bRunning = pContainer.state === 'RUNNING';
-        const sStatusClass = bRunning ? 'running' : (pContainer.state === 'PAUSED' ? 'paused' : 'stopped');
-        const sCommand = bRunning ? 'stop' : 'start';
+        const bPaused = pContainer.state === 'PAUSED';
+        const sStatusClass = bRunning ? 'running' : (bPaused ? 'paused' : 'stopped');
+        const sCommand = bRunning ? 'stop' : (bPaused ? 'resume' : 'start');
         const sWebUi = getContainerUrl(pContainer);
         const bHasUrlOverride = !!oDockerUrlOverrides[getOverrideKey(sOriginalName)];
         const bHasNameOverride = !!oItemNameOverrides[getOverrideKey(sOriginalName)];
         const bGearActive = bHasUrlOverride || bHasNameOverride;
         const sUpdateStatus = pUpdateMap ? pUpdateMap[sOriginalName] : null;
-        const bHasUpdate = sUpdateStatus === 'UPDATE_AVAILABLE' || sUpdateStatus === 'REBUILD_READY';
+        const bHasUpdate = UPDATE_STATUSES.includes(sUpdateStatus);
+        const oServerUnsupported = oUnsupported[sActiveServerId] || {};
+        const oUpdateOp = oUpdateOps[sActiveServerId];
+        const sPending = oPending[sActiveServerId]?.['docker::' + sOriginalName]?.sAction ||
+            (oUpdateOp?.items[sOriginalName] ? 'update' : null);
+        const aMenu = [];
+
+        if ((bRunning || bPaused) && oFeatures.restart && !oServerUnsupported.restart) {
+            aMenu.push('restart');
+        }
+
+        if (bRunning && oFeatures.pause && !oServerUnsupported.pause) {
+            aMenu.push('pause');
+        }
 
         const oRow = document.createElement('div');
         oRow.className = 'ut-item-row';
@@ -1570,25 +1935,614 @@ const runPopupLogic = async () => {
         oGearBtn.appendChild(createSvgIcon('#ico-settings'));
         oActions.appendChild(oGearBtn);
 
-        const oActionBtn = document.createElement('button');
-        oActionBtn.className = 'ut-item-action';
-        oActionBtn.dataset.action = 'controlDocker';
-        oActionBtn.dataset.id = pContainer.id;
-        oActionBtn.dataset.command = sCommand;
+        /* Shown while its own update is pending even if the status no longer lists the update */
+        if ((bHasUpdate && sCurrentKeyType !== 'readonly' && oFeatures.updates && !oServerUnsupported.update) ||
+            sPending === 'update') {
 
-        if (sCurrentKeyType === 'readonly') {
-            oActionBtn.disabled = true;
-            oActionBtn.title = 'View-only API key';
-        } else {
-            oActionBtn.title = bRunning ? 'Stop' : 'Start';
+            const oUpdateBtn = buildEl('button', 'ut-item-action');
+            oUpdateBtn.dataset.action = 'updateDocker';
+            oUpdateBtn.dataset.name = sOriginalName;
+            oUpdateBtn.title = sPending === 'update' ? PENDING_LABELS.update : 'Update';
+            oUpdateBtn.disabled = !!sPending || !!oUpdateOp;
+            oUpdateBtn.appendChild(sPending === 'update'
+                ? buildEl('span', 'ut-btn-spinner')
+                : createSvgIcon('#ico-update'));
+            oActions.appendChild(oUpdateBtn);
         }
 
-        oActionBtn.appendChild(createSvgIcon(bRunning ? '#ico-stop' : '#ico-play'));
-        oActions.appendChild(oActionBtn);
-
-        oRow.appendChild(oActions);
+        appendItemControls(oRow, oActions, {
+            sKind: 'docker',
+            sId: pContainer.id,
+            sKey: sOriginalName,
+            sLabel: sName,
+            sCommand: sCommand,
+            aMenu: aMenu,
+            sPending: sPending
+        });
 
         return oRow;
+    };
+
+    /**
+     * Adds the controls shared by container and VM rows: pending label, More menu button,
+     * the rightmost Start/Stop/Resume toggle, and the inline note under the row
+     * @param {HTMLElement} pRow - The row element; pActions is appended to it
+     * @param {HTMLElement} pActions - The row's action container, already holding the item-specific buttons
+     * @param {Object} pItem - {sKind, sId, sKey, sLabel, sCommand, aMenu, sPending}
+     */
+    const appendItemControls = (pRow, pActions, pItem) => {
+
+        const bReadOnly = sCurrentKeyType === 'readonly';
+        const oNote = oRowNotes[sActiveServerId]?.[pItem.sKind + '::' + pItem.sKey];
+        const oToggleDef = TOGGLE_BUTTONS[pItem.sCommand];
+
+        if (pItem.sPending) {
+            pRow.appendChild(buildEl('span', 'ut-item-status', PENDING_LABELS[pItem.sPending]));
+        }
+
+        if (pItem.aMenu.length > 0) {
+
+            const oMoreBtn = buildEl('button', 'ut-item-action');
+            oMoreBtn.dataset.action = 'itemMore';
+            oMoreBtn.dataset.kind = pItem.sKind;
+            oMoreBtn.dataset.id = pItem.sId;
+            oMoreBtn.dataset.key = pItem.sKey;
+            oMoreBtn.dataset.label = pItem.sLabel;
+            oMoreBtn.dataset.items = pItem.aMenu.join(',');
+            oMoreBtn.title = bReadOnly ? 'View-only API key' : 'More actions';
+            oMoreBtn.disabled = bReadOnly || !!pItem.sPending;
+            oMoreBtn.setAttribute('aria-label', 'More actions');
+            oMoreBtn.setAttribute('aria-haspopup', 'menu');
+            oMoreBtn.setAttribute('aria-expanded', 'false');
+            oMoreBtn.appendChild(createSvgIcon('#ico-more'));
+            pActions.appendChild(oMoreBtn);
+        }
+
+        const oToggleBtn = buildEl('button', 'ut-item-action');
+        oToggleBtn.dataset.action = 'itemControl';
+        oToggleBtn.dataset.kind = pItem.sKind;
+        oToggleBtn.dataset.id = pItem.sId;
+        oToggleBtn.dataset.key = pItem.sKey;
+        oToggleBtn.dataset.label = pItem.sLabel;
+        oToggleBtn.dataset.command = pItem.sCommand;
+
+        if (bReadOnly) {
+            oToggleBtn.disabled = true;
+            oToggleBtn.title = 'View-only API key';
+        } else if (pItem.sPending) {
+            oToggleBtn.disabled = true;
+            oToggleBtn.title = PENDING_LABELS[pItem.sPending];
+        } else {
+            oToggleBtn.title = oToggleDef.sTitle;
+        }
+
+        if (pItem.sPending && pItem.sPending !== 'update') {
+            oToggleBtn.appendChild(buildEl('span', 'ut-btn-spinner'));
+        } else {
+            oToggleBtn.appendChild(createSvgIcon(oToggleDef.sIcon));
+        }
+
+        pActions.appendChild(oToggleBtn);
+        pRow.appendChild(pActions);
+
+        if (oNote) {
+            pRow.classList.add('ut-item-row--note');
+            pRow.appendChild(buildEl('div', 'ut-item-note ut-item-note--' + oNote.sType, oNote.sText));
+        }
+    };
+
+    /**
+     * Binds the shared row toggles and More menu buttons of the Docker or VMs card
+     * @param {HTMLElement} pCard - The card element
+     */
+    const bindItemControls = (pCard) => {
+
+        pCard.querySelectorAll('[data-action="itemControl"]').forEach((pBtn) => {
+
+            pBtn.addEventListener('click', () => {
+
+                if (!pBtn.disabled) {
+                    const oSet = pBtn.dataset;
+                    runItemAction(oSet.kind, oSet.command, oSet.id, oSet.key, oSet.label);
+                }
+            });
+        });
+
+        pCard.querySelectorAll('[data-action="itemMore"]').forEach((pBtn) => {
+
+            pBtn.addEventListener('click', () => {
+
+                toggleMoreMenu(pBtn);
+            });
+        });
+    };
+
+    /**
+     * Opens the More menu of a row (closing any other), or closes it when it is already open
+     * @param {HTMLElement} pBtn - The row's More button
+     */
+    const toggleMoreMenu = (pBtn) => {
+
+        const bWasOpen = oOpenMenu?.oAnchor === pBtn;
+        closeMoreMenu(false);
+
+        if (bWasOpen || pBtn.disabled) {
+            return;
+        }
+
+        /* Lives on <body> with fixed position because cards clip overflowing content */
+        const oMenu = buildEl('div', 'ut-menu');
+        oMenu.setAttribute('role', 'menu');
+
+        pBtn.dataset.items.split(',').forEach((pAction) => {
+
+            const oItem = buildEl('button', 'ut-menu-item');
+            oItem.type = 'button';
+            oItem.setAttribute('role', 'menuitem');
+            oItem.appendChild(createSvgIcon(MENU_ITEMS[pAction].sIcon));
+            oItem.appendChild(buildEl('span', null, MENU_ITEMS[pAction].sTitle));
+
+            oItem.addEventListener('click', () => {
+
+                closeMoreMenu(false);
+                runItemAction(pBtn.dataset.kind, pAction, pBtn.dataset.id, pBtn.dataset.key, pBtn.dataset.label);
+            });
+
+            oMenu.appendChild(oItem);
+        });
+
+        document.body.appendChild(oMenu);
+
+        /* Open below the button, or above it when the popup has no room below */
+        const oRect = pBtn.getBoundingClientRect();
+        const nBelowTop = oRect.bottom + 2;
+        const nAboveTop = oRect.top - oMenu.offsetHeight - 2;
+        const bFitsBelow = nBelowTop + oMenu.offsetHeight <= window.innerHeight;
+
+        oMenu.style.top = Math.max(0, bFitsBelow ? nBelowTop : nAboveTop) + 'px';
+        oMenu.style.right = (window.innerWidth - oRect.right) + 'px';
+
+        pBtn.setAttribute('aria-expanded', 'true');
+        oOpenMenu = {oMenu: oMenu, oAnchor: pBtn};
+        oMenu.firstChild.focus();
+    };
+
+    /**
+     * Closes the open More menu, if any
+     * @param {boolean} pRestoreFocus - Move focus back to the More button (Escape)
+     */
+    const closeMoreMenu = (pRestoreFocus) => {
+
+        if (!oOpenMenu) {
+            return;
+        }
+
+        const oAnchor = oOpenMenu.oAnchor;
+        oOpenMenu.oMenu.remove();
+        oOpenMenu = null;
+        oAnchor.setAttribute('aria-expanded', 'false');
+
+        if (pRestoreFocus && oAnchor.isConnected) {
+            oAnchor.focus();
+        }
+    };
+
+    /**
+     * Re-renders the Docker or VMs card when the given server is still the one on screen
+     * @param {string} pServerId - Server the change belongs to
+     * @param {string} pKind - 'docker', 'update' or 'vm'
+     */
+    const rerenderCard = (pServerId, pKind) => {
+
+        if (pServerId !== sActiveServerId || !oCurrentData) {
+            return;
+        }
+
+        if (pKind === 'vm') {
+            renderVMsCard();
+        } else {
+            renderDockerCard();
+        }
+
+        setupCollapsibleCards();
+    };
+
+    /**
+     * Shows a one-line message under a list row for a limited time
+     * @param {string} pServerId - Server the row belongs to
+     * @param {string} pItemKey - Row key ('docker::name' or 'vm::id')
+     * @param {string} pText - Message text
+     * @param {string} pType - 'error', 'success' or 'info'
+     * @param {number} pDuration - Milliseconds before the note is removed
+     */
+    const setRowNote = (pServerId, pItemKey, pText, pType, pDuration) => {
+
+        if (!oRowNotes[pServerId]) {
+            oRowNotes[pServerId] = {};
+        }
+
+        const oNote = {sText: pText, sType: pType};
+        oRowNotes[pServerId][pItemKey] = oNote;
+
+        setTimeout(() => {
+
+            if (oRowNotes[pServerId][pItemKey] === oNote) {
+                delete oRowNotes[pServerId][pItemKey];
+                rerenderCard(pServerId, pItemKey.split('::')[0]);
+            }
+        }, pDuration);
+    };
+
+    /**
+     * Sends a start/stop/pause/resume/restart command and tracks the row until the outcome is known.
+     * The state is kept per server; UI effects only apply while that server is on screen.
+     * @param {string} pKind - 'docker' or 'vm'
+     * @param {string} pAction - start, stop, pause, resume or restart
+     * @param {string} pId - Container or VM id
+     * @param {string} pKey - Row key (container name or VM id)
+     * @param {string} pLabel - Display name used in messages
+     */
+    const runItemAction = (pKind, pAction, pId, pKey, pLabel) => {
+
+        const sServerId = sActiveServerId;
+        const sItemKey = pKind + '::' + pKey;
+
+        if (!oPending[sServerId]) {
+            oPending[sServerId] = {};
+        }
+
+        const oServerPending = oPending[sServerId];
+
+        if (oServerPending[sItemKey]) {
+            return;
+        }
+
+        const oEntry = {sKind: pKind, sAction: pAction, sKey: pKey, nStarted: Date.now(), nChecks: 0, bPoll: false};
+        oServerPending[sItemKey] = oEntry;
+        rerenderCard(sServerId, pKind);
+
+        const oMessage = pKind === 'docker'
+            ? {action: 'controlDocker', serverId: sServerId, containerId: pId, command: pAction}
+            : {action: 'controlVM', serverId: sServerId, vmId: pId, command: pAction};
+
+        chrome.runtime.sendMessage(oMessage, (pResponse) => {
+
+            const bNoAnswer = !!chrome.runtime.lastError || !pResponse;
+
+            if (oServerPending[sItemKey] !== oEntry) {
+                return;
+            }
+
+            if (pResponse?.error === 'PERMISSION_DENIED') {
+
+                delete oServerPending[sItemKey];
+
+                if (sServerId === sActiveServerId) {
+                    sCurrentKeyType = 'readonly';
+                    renderDashboard();
+                }
+
+                return;
+            }
+
+            let sOutcome = 'unknown';
+
+            if (!bNoAnswer) {
+                sOutcome = pResponse.success ? 'success' : (pResponse.outcome || 'failed');
+            }
+
+            /* Container pause/resume/restart can be missing from the server's schema;
+               VM actions exist on every supported version */
+            const sFeature = pKind === 'docker' ? {pause: 'pause', resume: 'pause', restart: 'restart'}[pAction] : null;
+
+            if (sOutcome === 'unsupported' && sFeature) {
+
+                delete oServerPending[sItemKey];
+                oUnsupported[sServerId] = {...oUnsupported[sServerId], [sFeature]: true};
+
+            } else if (sOutcome === 'unsupported' || sOutcome === 'failed') {
+
+                delete oServerPending[sItemKey];
+                const sText = 'Could not ' + pAction + ' ' + pLabel + ': ' + getErrorMessage(pResponse.error);
+                setRowNote(sServerId, sItemKey, sText, 'error', NOTE_ERROR_MS);
+
+            } else if (pAction === 'restart' && sOutcome === 'success') {
+
+                /* The server answers a restart only after the new state settled */
+                delete oServerPending[sItemKey];
+
+                if (oRowNotes[sServerId]) {
+                    delete oRowNotes[sServerId][sItemKey];
+                }
+
+                if (sServerId === sActiveServerId) {
+                    fetchAndRender(true);
+                }
+
+            } else if (pAction === 'restart') {
+
+                /* No answer: polls cannot tell a finished restart from one that never happened */
+                setTimeout(() => {
+
+                    if (oServerPending[sItemKey] === oEntry) {
+                        delete oServerPending[sItemKey];
+                        setRowNote(sServerId, sItemKey, 'Status unknown, refresh to check', 'info', NOTE_ERROR_MS);
+                        rerenderCard(sServerId, pKind);
+                    }
+                }, Math.max(0, oEntry.nStarted + RESTART_CAP_MS - Date.now()));
+
+            } else {
+
+                oEntry.bPoll = true;
+                scheduleStatusCheck(pKind);
+            }
+
+            rerenderCard(sServerId, pKind);
+        });
+    };
+
+    /**
+     * Starts an update for one container, or for every container with an update (Update all).
+     * The background stores the operation so it survives a closed popup; status checks decide the result.
+     * @param {Array} pContainers - Container objects to update
+     * @param {boolean} pBulk - True for Update all (a summary is shown when every container is resolved)
+     */
+    const startUpdate = (pContainers, pBulk) => {
+
+        const sServerId = sActiveServerId;
+
+        if (oUpdateOps[sServerId] || pContainers.length === 0) {
+            return;
+        }
+
+        const oItems = {};
+
+        pContainers.forEach((pC) => {
+
+            oItems[getContainerName(pC)] = {id: pC.id, startState: pC.state};
+        });
+
+        const oOp = {
+            bulk: pBulk,
+            startedAt: Date.now(),
+            items: oItems,
+            total: pContainers.length,
+            done: 0,
+            failed: 0,
+            unknown: 0
+        };
+
+        oUpdateOps[sServerId] = oOp;
+        rerenderCard(sServerId, 'docker');
+        scheduleStatusCheck('update');
+
+        chrome.runtime.sendMessage({action: 'updateContainers', serverId: sServerId, record: oOp}, (pResponse) => {
+
+            const bNoAnswer = !!chrome.runtime.lastError || !pResponse;
+
+            /* Success or no answer: status checks decide the result */
+            if (oUpdateOps[sServerId] !== oOp || bNoAnswer || pResponse.success || pResponse.outcome === 'unknown') {
+                return;
+            }
+
+            if (pResponse.outcome === 'unsupported') {
+
+                delete oUpdateOps[sServerId];
+                oUnsupported[sServerId] = {...oUnsupported[sServerId], update: true};
+
+            } else {
+
+                /* The next status check marks every container that is not updated yet as failed */
+                oOp.failMessage = pResponse.error;
+
+                if (sServerId === sActiveServerId && !oPollBusy.update) {
+                    clearTimeout(oPollTimers.update);
+                    runStatusCheck('update');
+                }
+            }
+
+            persistUpdateOp(sServerId);
+            rerenderCard(sServerId, 'docker');
+        });
+    };
+
+    /**
+     * Writes the update operation of a server to storage, or removes it once it is finished
+     * @param {string} pServerId - The server ID
+     */
+    const persistUpdateOp = (pServerId) => {
+
+        chrome.storage.local.get(['pendingUpdates'], (pResult) => {
+
+            const oAll = pResult.pendingUpdates || {};
+
+            if (oUpdateOps[pServerId]) {
+                oAll[pServerId] = oUpdateOps[pServerId];
+            } else {
+                delete oAll[pServerId];
+            }
+
+            chrome.storage.local.set({pendingUpdates: oAll});
+        });
+    };
+
+    /**
+     * Returns the pending items of the active server that a status check of this kind resolves
+     * @param {string} pKind - 'docker', 'vm' or 'update'
+     * @returns {Array} [rowKey, entry] pairs, or [containerName, item] pairs for 'update'
+     */
+    const getCheckEntries = (pKind) => {
+
+        if (pKind === 'update') {
+            return Object.entries(oUpdateOps[sActiveServerId]?.items || {});
+        }
+
+        return Object.entries(oPending[sActiveServerId] || {}).filter(([, pEntry]) => {
+
+            return pEntry.sKind === pKind && pEntry.bPoll;
+        });
+    };
+
+    /**
+     * Schedules the next status check of one kind for the active server while it has pending items
+     * @param {string} pKind - 'docker', 'vm' or 'update'
+     */
+    const scheduleStatusCheck = (pKind) => {
+
+        if (oPollTimers[pKind] || oPollBusy[pKind] || getCheckEntries(pKind).length === 0) {
+            return;
+        }
+
+        const nDelay = pKind === 'update' ? POLL_UPDATE_MS : POLL_ACTION_MS;
+        oPollTimers[pKind] = setTimeout(() => runStatusCheck(pKind), nDelay);
+    };
+
+    /**
+     * Runs one narrow status query for the active server, refreshes the row states from it,
+     * and resolves pending items: target state reached, poll cap hit, or update finished/failed/capped
+     * @param {string} pKind - 'docker', 'vm' or 'update'
+     */
+    const runStatusCheck = (pKind) => {
+
+        oPollTimers[pKind] = null;
+
+        const sServerId = sActiveServerId;
+        const nGen = nViewGen;
+
+        if (getCheckEntries(pKind).length === 0) {
+            return;
+        }
+
+        oPollBusy[pKind] = true;
+
+        chrome.runtime.sendMessage({action: 'fetchStatus', serverId: sServerId, kind: pKind}, (pResponse) => {
+
+            const oData = chrome.runtime.lastError ? null : pResponse?.data;
+
+            if (nGen !== nViewGen) {
+                return;
+            }
+
+            oPollBusy[pKind] = false;
+
+            const bVm = pKind === 'vm';
+            const oFreshByKey = {};
+
+            ((bVm ? oData?.vms?.domains : oData?.docker?.containers) || []).forEach((pItem) => {
+
+                oFreshByKey[bVm ? pItem.id : getContainerName(pItem)] = pItem;
+            });
+
+            ((bVm ? oCurrentData?.vms?.domains : oCurrentData?.docker?.containers) || []).forEach((pItem) => {
+
+                const oFresh = oFreshByKey[bVm ? pItem.id : getContainerName(pItem)];
+
+                if (oFresh) {
+                    pItem.state = oFresh.state;
+                    pItem.id = oFresh.id;
+                }
+            });
+
+            if (pKind !== 'update') {
+
+                getCheckEntries(pKind).forEach(([pItemKey, pEntry]) => {
+
+                    pEntry.nChecks++;
+
+                    const oFresh = oFreshByKey[pEntry.sKey];
+
+                    if (oFresh && TARGET_STATES[pEntry.sAction].includes(oFresh.state)) {
+
+                        delete oPending[sServerId][pItemKey];
+
+                        if (oRowNotes[sServerId]) {
+                            delete oRowNotes[sServerId][pItemKey];
+                        }
+
+                    } else if (pEntry.nChecks >= POLL_ACTION_MAX) {
+
+                        delete oPending[sServerId][pItemKey];
+                        setRowNote(sServerId, pItemKey, 'Status unknown, refresh to check', 'info', NOTE_ERROR_MS);
+                    }
+                });
+
+            } else if (oUpdateOps[sServerId]) {
+
+                const oOp = oUpdateOps[sServerId];
+                const aStatuses = oData?.docker?.containerUpdateStatuses;
+                const oUpdateByName = {};
+                const bCapped = Date.now() - oOp.startedAt >= UPDATE_CAP_MS;
+                let bChanged = false;
+
+                (aStatuses || []).forEach((pS) => {
+
+                    oUpdateByName[pS.name] = pS.updateStatus;
+                });
+
+                if (aStatuses && oCurrentData?.docker) {
+                    oCurrentData.docker.updateStatuses = aStatuses;
+                }
+
+                Object.entries(oOp.items).forEach(([pName, pItem]) => {
+
+                    const oFresh = oFreshByKey[pName];
+
+                    /* A container that was stopped before its update stays stopped after it */
+                    const bDone = !!aStatuses && !!oFresh && !UPDATE_STATUSES.includes(oUpdateByName[pName]) &&
+                        (oFresh.state === 'RUNNING' || pItem.startState !== 'RUNNING');
+                    const sItemKey = 'docker::' + pName;
+                    const sLabel = getItemDisplayName(pName, pName);
+
+                    if (bDone) {
+                        oOp.done++;
+                        setRowNote(sServerId, sItemKey, sLabel + ' updated', 'success', NOTE_SUCCESS_MS);
+                    } else if (oOp.failMessage) {
+                        oOp.failed++;
+                        const sText = 'Update failed for ' + sLabel + ': ' + getErrorMessage(oOp.failMessage);
+                        setRowNote(sServerId, sItemKey, sText, 'error', NOTE_ERROR_MS);
+                    } else if (bCapped) {
+                        oOp.unknown++;
+                        const sText = 'Update status unknown. Refresh to check.';
+                        setRowNote(sServerId, sItemKey, sText, 'info', NOTE_ERROR_MS);
+                    } else {
+                        return;
+                    }
+
+                    delete oOp.items[pName];
+                    bChanged = true;
+                });
+
+                if (Object.keys(oOp.items).length === 0) {
+
+                    if (oOp.bulk) {
+
+                        const sSummary = 'Updated ' + oOp.done + ' of ' + oOp.total +
+                            (oOp.failed > 0 ? ', ' + oOp.failed + ' failed' : '') +
+                            (oOp.unknown > 0 ? ', ' + oOp.unknown + ' unknown' : '');
+
+                        oUpdateSummary[sServerId] = sSummary;
+
+                        setTimeout(() => {
+
+                            if (oUpdateSummary[sServerId] === sSummary) {
+                                delete oUpdateSummary[sServerId];
+                                rerenderCard(sServerId, 'docker');
+                            }
+                        }, SUMMARY_MS);
+                    }
+
+                    delete oUpdateOps[sServerId];
+                    fetchAndRender(true);
+                }
+
+                if (bChanged) {
+                    persistUpdateOp(sServerId);
+                }
+            }
+
+            rerenderCard(sServerId, pKind);
+            scheduleStatusCheck(pKind);
+        });
     };
 
     /**
@@ -1597,36 +2551,19 @@ const runPopupLogic = async () => {
      */
     const bindContainerActions = (pContainer) => {
 
-        pContainer.querySelectorAll('[data-action="controlDocker"]').forEach((pBtn) => {
+        bindItemControls(pContainer);
+
+        pContainer.querySelectorAll('[data-action="updateDocker"]').forEach((pBtn) => {
 
             pBtn.addEventListener('click', () => {
 
-                if (pBtn.disabled) {
-                    return;
+                const oContainer = (oCurrentData?.docker?.containers || []).find(
+                    (pC) => getContainerName(pC) === pBtn.dataset.name
+                );
+
+                if (!pBtn.disabled && oContainer) {
+                    startUpdate([oContainer], false);
                 }
-
-                pBtn.disabled = true;
-
-                chrome.runtime.sendMessage({
-                    action: 'controlDocker',
-                    serverId: sActiveServerId,
-                    containerId: pBtn.dataset.id,
-                    command: pBtn.dataset.command
-                }, (pResponse) => {
-
-                    if (chrome.runtime.lastError) {
-                        pBtn.disabled = false;
-                        return;
-                    }
-
-                    if (pResponse?.error === 'PERMISSION_DENIED') {
-                        sCurrentKeyType = 'readonly';
-                        renderDashboard();
-                        return;
-                    }
-
-                    setTimeout(() => fetchAndRender(true), 1500);
-                });
             });
         });
 
@@ -1658,7 +2595,7 @@ const runPopupLogic = async () => {
             const aContainers = oCurrentData?.docker?.containers || [];
             const oContainer = aContainers.find((pC) => getContainerName(pC) === pItemId);
             sOriginalName = oContainer ? getContainerName(oContainer) : pItemId;
-            const sDetected = oContainer ? getAutoDetectedUrl(oContainer) : '';
+            const sDetected = oContainer ? getDetectedUrl(oContainer) : '';
             const sOverride = oDockerUrlOverrides[sKey] || '';
 
             oUrlModalDetected.textContent = sDetected || 'No URL detected';
@@ -1747,6 +2684,8 @@ const runPopupLogic = async () => {
 
     /** Renders the VMs card with VM list, status dots, and control buttons */
     const renderVMsCard = () => {
+
+        closeMoreMenu(false);
 
         const bVMsAvailable = oCurrentData.vms !== null && oCurrentData.vms !== undefined;
         const aVMs = oCurrentData.vms?.domains || [];
@@ -1848,8 +2787,9 @@ const runPopupLogic = async () => {
         const sOriginalName = pVM.name || pVM.id || '?';
         const sName = getItemDisplayName(pVM.id, sOriginalName);
         const bRunning = pVM.state === 'RUNNING';
-        const sStatusClass = bRunning ? 'running' : (pVM.state === 'PAUSED' ? 'paused' : 'stopped');
-        const sCommand = bRunning ? 'stop' : 'start';
+        const bPaused = pVM.state === 'PAUSED';
+        const sStatusClass = bRunning ? 'running' : (bPaused ? 'paused' : 'stopped');
+        const sCommand = bRunning ? 'stop' : (bPaused ? 'resume' : 'start');
         const bHasNameOverride = !!oItemNameOverrides[getOverrideKey(pVM.id)];
 
         const oRow = document.createElement('div');
@@ -1879,23 +2819,15 @@ const runPopupLogic = async () => {
         oGearBtn.appendChild(createSvgIcon('#ico-settings'));
         oActions.appendChild(oGearBtn);
 
-        const oActionBtn = document.createElement('button');
-        oActionBtn.className = 'ut-item-action';
-        oActionBtn.dataset.action = 'controlVM';
-        oActionBtn.dataset.id = pVM.id;
-        oActionBtn.dataset.command = sCommand;
-
-        if (sCurrentKeyType === 'readonly') {
-            oActionBtn.disabled = true;
-            oActionBtn.title = 'View-only API key';
-        } else {
-            oActionBtn.title = bRunning ? 'Stop' : 'Start';
-        }
-
-        oActionBtn.appendChild(createSvgIcon(bRunning ? '#ico-stop' : '#ico-play'));
-        oActions.appendChild(oActionBtn);
-
-        oRow.appendChild(oActions);
+        appendItemControls(oRow, oActions, {
+            sKind: 'vm',
+            sId: pVM.id,
+            sKey: pVM.id,
+            sLabel: sName,
+            sCommand: sCommand,
+            aMenu: bRunning || bPaused ? ['restart'] : [],
+            sPending: oPending[sActiveServerId]?.['vm::' + pVM.id]?.sAction || null
+        });
 
         return oRow;
     };
@@ -1914,38 +2846,7 @@ const runPopupLogic = async () => {
             });
         });
 
-        pContainer.querySelectorAll('[data-action="controlVM"]').forEach((pBtn) => {
-
-            pBtn.addEventListener('click', () => {
-
-                if (pBtn.disabled) {
-                    return;
-                }
-
-                pBtn.disabled = true;
-
-                chrome.runtime.sendMessage({
-                    action: 'controlVM',
-                    serverId: sActiveServerId,
-                    vmId: pBtn.dataset.id,
-                    command: pBtn.dataset.command
-                }, (pResponse) => {
-
-                    if (chrome.runtime.lastError) {
-                        pBtn.disabled = false;
-                        return;
-                    }
-
-                    if (pResponse?.error === 'PERMISSION_DENIED') {
-                        sCurrentKeyType = 'readonly';
-                        renderDashboard();
-                        return;
-                    }
-
-                    setTimeout(() => fetchAndRender(true), 2000);
-                });
-            });
-        });
+        bindItemControls(pContainer);
     };
 
     /**
@@ -2163,19 +3064,29 @@ const runPopupLogic = async () => {
     /** Fetches the unread notification list from the server and re-renders the card */
     const fetchNotificationList = () => {
 
+        nNotifGen++;
+        const nGen = nNotifGen;
+        const sServerId = sActiveServerId;
+
         bNotificationsLoading = true;
         renderNotificationsCard();
 
         chrome.runtime.sendMessage({
             action: 'fetchNotifications',
-            serverId: sActiveServerId,
+            serverId: sServerId,
             filter: {type: 'UNREAD', offset: 0, limit: 50}
         }, (pResponse) => {
 
+            const sLastError = chrome.runtime.lastError?.message;
+
+            if (nGen !== nNotifGen || sServerId !== sActiveServerId) {
+                return;
+            }
+
             bNotificationsLoading = false;
 
-            if (chrome.runtime.lastError) {
-                console.warn('fetchNotifications error:', chrome.runtime.lastError.message);
+            if (sLastError) {
+                console.warn('fetchNotifications error:', sLastError);
                 renderNotificationsCard();
                 return;
             }
@@ -2204,14 +3115,26 @@ const runPopupLogic = async () => {
 
                 pBtn.disabled = true;
 
+                const sServerId = sActiveServerId;
+
                 chrome.runtime.sendMessage({
                     action: 'archiveNotification',
-                    serverId: sActiveServerId,
+                    serverId: sServerId,
                     notificationId: pBtn.dataset.id
                 }, (pResponse) => {
 
-                    if (chrome.runtime.lastError) {
-                        console.warn('archiveNotification error:', chrome.runtime.lastError.message);
+                    const sLastError = chrome.runtime.lastError?.message;
+
+                    if (pResponse?.success) {
+                        requestBadgeRefresh();
+                    }
+
+                    if (sServerId !== sActiveServerId) {
+                        return;
+                    }
+
+                    if (sLastError) {
+                        console.warn('archiveNotification error:', sLastError);
                         pBtn.disabled = false;
                         return;
                     }
@@ -2251,13 +3174,25 @@ const runPopupLogic = async () => {
                     oLabel.textContent = 'Archiving...';
                 }
 
+                const sServerId = sActiveServerId;
+
                 chrome.runtime.sendMessage({
                     action: 'archiveAll',
-                    serverId: sActiveServerId
+                    serverId: sServerId
                 }, (pResponse) => {
 
-                    if (chrome.runtime.lastError) {
-                        console.warn('archiveAll error:', chrome.runtime.lastError.message);
+                    const sLastError = chrome.runtime.lastError?.message;
+
+                    if (pResponse?.success) {
+                        requestBadgeRefresh();
+                    }
+
+                    if (sServerId !== sActiveServerId) {
+                        return;
+                    }
+
+                    if (sLastError) {
+                        console.warn('archiveAll error:', sLastError);
                         oArchiveAll.disabled = false;
                         if (oLabel) oLabel.textContent = 'Archive All';
                         return;
@@ -2327,9 +3262,10 @@ const runPopupLogic = async () => {
      * @param {string} pLabel - The progress bar label
      * @param {number} pPercent - The fill percentage (0-100)
      * @param {string} [pTooltip] - Optional tooltip text for the row
+     * @param {boolean} [pPlain] - If true, no warn/danger colors (progress, not usage)
      * @returns {HTMLElement} The progress bar row element
      */
-    const renderProgressBar = (pLabel, pPercent, pTooltip) => {
+    const renderProgressBar = (pLabel, pPercent, pTooltip, pPlain) => {
 
         const oRow = buildEl('div', 'ut-progress-row');
         if (pTooltip) oRow.title = pTooltip;
@@ -2338,8 +3274,8 @@ const runPopupLogic = async () => {
 
         const oBar = buildEl('div', 'ut-progress-bar');
         const oFill = buildEl('div', 'ut-progress-fill');
-        if (pPercent >= 90) oFill.classList.add('danger');
-        else if (pPercent >= 75) oFill.classList.add('warn');
+        if (!pPlain && pPercent >= 90) oFill.classList.add('danger');
+        else if (!pPlain && pPercent >= 75) oFill.classList.add('warn');
         oFill.style.width = pPercent + '%';
         oBar.appendChild(oFill);
         oRow.appendChild(oBar);
@@ -2644,10 +3580,16 @@ const runPopupLogic = async () => {
 
                 if (sActiveServerId === sDeletedId && aServers.length > 0) {
                     sActiveServerId = aServers[0].id;
+                    resetServerView();
                 }
 
+                delete oSettings.customOrders[sDeletedId];
+                delete oPending[sDeletedId];
+                delete oUpdateOps[sDeletedId];
+                persistUpdateOp(sDeletedId);
+
                 saveOverrides();
-                saveStorage();
+                saveStorage().then(requestBadgeRefresh);
                 renderServerList();
             });
             oActions.appendChild(oDeleteBtn);
@@ -2694,7 +3636,9 @@ const runPopupLogic = async () => {
     };
 
     /**
-     * Requests host permission for the given server URL origin
+     * Requests host permission for the given server URL origin. permissions.request() runs before the
+     * first await here, so a caller must invoke this before its own first await: Firefox only accepts the
+     * request synchronously inside the click handler.
      * @param {string} pUrl - The server URL to request permission for
      * @returns {Promise<boolean>} True if permission was granted
      */
@@ -2714,8 +3658,9 @@ const runPopupLogic = async () => {
     };
 
     /**
-     * Save happens FIRST because chrome.permissions.request() may
-     * close the popup, killing any async code that follows.
+     * Saves the server form as a staged record: it is stored with a pending-permission marker (plus a
+     * snapshot of the previous record on edit) before the permission answer, because the prompt may
+     * close the popup and end this function. The marker is settled here, or on the next popup open.
      */
     const saveServerForm = async () => {
 
@@ -2736,6 +3681,8 @@ const runPopupLogic = async () => {
             return;
         }
 
+        const pGrant = requestHostPermission(sUrl);
+
         const sId = oServerFormId.value || ('server-' + Date.now());
         const nExisting = aServers.findIndex((pS) => pS.id === sId);
 
@@ -2744,11 +3691,27 @@ const runPopupLogic = async () => {
             name: sName,
             url: sUrl,
             apiKey: sKey,
-            enabled: true
+            enabled: true,
+            pendingPermission: true
         };
 
         if (nExisting >= 0) {
+
+            const oExisting = aServers[nExisting];
+            const oSnapshot = {...oExisting};
+
+            delete oSnapshot.pendingPermission;
+            delete oSnapshot.prev;
+
+            /* A record still staged by an unsettled earlier save keeps its original snapshot */
+            const oPrev = oExisting.pendingPermission ? oExisting.prev : oSnapshot;
+
+            if (oPrev) {
+                oServer.prev = oPrev;
+            }
+
             aServers[nExisting] = oServer;
+
         } else {
             aServers.push(oServer);
         }
@@ -2759,25 +3722,66 @@ const runPopupLogic = async () => {
 
         await saveStorage();
 
-        /* Permission prompt may close the popup and kill this function.
-           On next open the server will already be saved in storage. */
-        const bGranted = await requestHostPermission(sUrl);
+        const bGranted = await pGrant;
+        resolveStagedServer(sId, bGranted);
+
+        if (!aServers.find((pS) => pS.id === sActiveServerId)) {
+            sActiveServerId = aServers.length > 0 ? aServers[0].id : null;
+        }
+
+        if (bGranted && nExisting < 0 && sActiveServerId !== sId) {
+            sActiveServerId = sId;
+            resetServerView();
+        }
+
+        await saveStorage();
 
         if (!bGranted) {
-
-            aServers = aServers.filter((pS) => pS.id !== sId);
-
-            if (sActiveServerId === sId) {
-                sActiveServerId = aServers.length > 0 ? aServers[0].id : null;
-            }
-
-            await saveStorage();
             showTestResult('Host permission denied. The extension needs access to connect to this server.', false);
             return;
         }
 
         closeServerForm();
         renderServerList();
+        requestBadgeRefresh();
+    };
+
+    /**
+     * Settles a staged server save: keeps the record when the host permission is granted,
+     * otherwise restores the previous record (edit) or removes the server (add)
+     * @param {string} pServerId - The staged server ID
+     * @param {boolean} pGranted - Whether the host permission is granted
+     */
+    const resolveStagedServer = (pServerId, pGranted) => {
+
+        const nIdx = aServers.findIndex((pS) => pS.id === pServerId);
+
+        if (nIdx === -1) {
+            return;
+        }
+
+        const oServer = {...aServers[nIdx]};
+        const oPrev = oServer.prev;
+
+        delete oServer.pendingPermission;
+        delete oServer.prev;
+
+        if (pGranted) {
+            aServers[nIdx] = oServer;
+        } else if (oPrev) {
+            aServers[nIdx] = {...oPrev, id: pServerId};
+        } else {
+            aServers.splice(nIdx, 1);
+        }
+    };
+
+    /** Asks the background to recount unread notifications for the toolbar badge */
+    const requestBadgeRefresh = () => {
+
+        chrome.runtime.sendMessage({action: 'refreshBadge'}, () => {
+
+            void chrome.runtime.lastError;
+        });
     };
 
     /**
@@ -2903,7 +3907,7 @@ const runPopupLogic = async () => {
     oRefreshInterval.addEventListener('change', () => {
 
         oSettings.refreshInterval = parseInt(oRefreshInterval.value, 10);
-        saveStorage();
+        saveStorage().then(requestBadgeRefresh);
         setupAutoRefresh();
     });
 
@@ -2986,7 +3990,58 @@ const runPopupLogic = async () => {
         saveStorage();
     });
 
+    document.addEventListener('click', (pEvent) => {
+
+        if (oOpenMenu && !oOpenMenu.oMenu.contains(pEvent.target) && !oOpenMenu.oAnchor.contains(pEvent.target)) {
+            closeMoreMenu(false);
+        }
+    });
+
+    document.addEventListener('focusin', (pEvent) => {
+
+        if (oOpenMenu && !oOpenMenu.oMenu.contains(pEvent.target) && pEvent.target !== oOpenMenu.oAnchor) {
+            closeMoreMenu(false);
+        }
+    });
+
+    document.addEventListener('keydown', (pEvent) => {
+
+        if (pEvent.key === 'Escape' && oOpenMenu) {
+            pEvent.preventDefault();
+            closeMoreMenu(true);
+        }
+    });
+
+    /* The menu is positioned once; scrolling would detach it from its button */
+    document.addEventListener('scroll', () => closeMoreMenu(false), true);
+
     const bKeyError = await loadStorage();
+
+    /* Saves whose permission prompt closed the popup are settled from the actual grant */
+    const aStaged = bKeyError ? [] : aServers.filter((pS) => pS.pendingPermission);
+
+    for (const oStaged of aStaged) {
+
+        let bGranted = false;
+
+        try {
+            bGranted = await chrome.permissions.contains({origins: [new URL(oStaged.url).origin + '/*']});
+        } catch (_) {
+            /* Unparsable URL: not granted */
+        }
+
+        resolveStagedServer(oStaged.id, bGranted);
+    }
+
+    if (aStaged.length > 0) {
+
+        if (!aServers.find((pS) => pS.id === sActiveServerId)) {
+            sActiveServerId = aServers.length > 0 ? aServers[0].id : null;
+        }
+
+        await saveStorage();
+    }
+
     applyTheme();
     applyCompact();
     applyPopupDimensions();

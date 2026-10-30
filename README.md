@@ -6,7 +6,7 @@
 
 **Monitor your Unraid servers at a glance: system metrics, array status, Docker containers, VMs, and notifications in a single popup.**
 
-![Version](https://img.shields.io/badge/version-1.2.0-blue)
+![Version](https://img.shields.io/badge/version-1.3.0-blue)
 ![License](https://img.shields.io/badge/license-FSL--1.1--MIT-green)
 ![Manifest](https://img.shields.io/badge/manifest-v3-orange)
 
@@ -28,13 +28,13 @@ Supports multiple servers, configurable auto-refresh, per-card visibility and so
 
 ### 📊 Dashboard Cards
 
-- **System** - CPU brand, cores/threads, total memory, CPU and RAM usage bars, uptime, server version, and LAN IP address. Clickable server name links directly to the WebGUI.
+- **System** - CPU brand, cores/threads, total memory, CPU and RAM usage bars, uptime, server version, and LAN IP address. Temperature summary (average, hottest, warning/critical sensor counts) on API 4.37.6+. Clickable server name links directly to the WebGUI.
 
-- **Array** - Array state, total capacity with usage bar, per-disk health indicators with temperature and error counts, parity and cache pools.
+- **Array** - Array state, total capacity with usage bar, per-disk health indicators with temperature and error counts, parity and cache pools. Hard drive chips turn orange/red at Unraid's default disk temperature warning/critical thresholds (SSD/NVMe chips are not colored by temperature, as their thresholds are not available from the API). Parity check status: progress and speed while running, paused state, or the last check result.
 
-- **Docker** - All containers with running/stopped status, start/stop controls, auto-detected WebUI links, per-container URL overrides, and update indicators (orange dot badge when container updates are available).
+- **Docker** - All containers with running/stopped/paused status, start/stop/resume controls, and a More menu with Restart (API 4.36+) and Pause (API 4.30+). WebUI links from the Unraid template (API 4.30+) with port detection as fallback, per-container URL overrides, update indicators, and one-click Update or Update all (API 4.30+, admin key) that keeps tracking progress after the popup is closed.
 
-- **VMs** - All virtual machines with running/stopped/paused status and start/stop controls.
+- **VMs** - All virtual machines with running/stopped/paused status, start/stop/resume controls, and Restart from the More menu.
 
 - **Notifications** - Unread alert, warning, and info counts. Expandable list with individual and bulk archive actions. Badge count on the extension icon.
 
@@ -158,6 +158,21 @@ Chrome, Edge, and Firefox (MV3, 142+).
 - Code co-authored with **Claude Code**
 
 ## 📝 Changelog
+
+### v1.3.0 - 2026-10-30
+
+- Container WebUI links from the Unraid template, with port detection as fallback (API 4.30+)
+- Update one container or all containers from the popup (API 4.30+, admin key)
+- Restart and pause/resume for containers, restart and resume for VMs, via a new More menu
+- Parity check progress, speed and last result on the Array card
+- System temperature summary (API 4.37.6+) and hard drive temperature warning/critical colors
+- Fixed saving and editing servers on Firefox, and editing a server no longer deletes it when the permission prompt is denied
+- Fixed the toolbar badge disappearing after a browser restart; it now also refreshes after server and notification changes
+- Refresh errors are shown in a strip above the cards instead of being silently ignored
+- Fixed responses from one server overwriting another server's view when switching quickly
+- Failed container/VM actions now show the server's error on the row; Stop stays pending until the container/VM has stopped
+- Custom sort order is now kept per server
+- Readable timeout and server error messages on every browser
 
 ### v1.2.0 - 2026-03-14
 

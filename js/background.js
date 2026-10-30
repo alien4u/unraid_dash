@@ -65,15 +65,29 @@ const executeGraphQL = async (pUrl, pApiKey, pQuery, pVariables) => {
         oBody.variables = pVariables;
     }
 
-    const oResponse = await fetch(sEndpoint, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': pApiKey
-        },
-        body: JSON.stringify(oBody),
-        signal: AbortSignal.timeout(15000)
-    });
+    let oResponse;
+
+    try {
+
+        oResponse = await fetch(sEndpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': pApiKey
+            },
+            body: JSON.stringify(oBody),
+            signal: AbortSignal.timeout(15000)
+        });
+
+    } catch (pErr) {
+
+        /* The DOMException message differs per browser; only the name is reliable */
+        if (pErr.name === 'TimeoutError') {
+            throw new Error('TIMEOUT');
+        }
+
+        throw pErr;
+    }
 
     if (!oResponse.ok) {
 
@@ -111,7 +125,15 @@ const executeGraphQL = async (pUrl, pApiKey, pQuery, pVariables) => {
             return oJson.data;
         }
 
-        throw new Error('GQL_ERROR: ' + oJson.errors[0].message);
+        const oFirstError = oJson.errors[0];
+
+        const bValidation = oFirstError.extensions?.code === 'GRAPHQL_VALIDATION_FAILED';
+
+        if (bValidation || isUnsupportedMsg(oFirstError.message || '')) {
+            throw new Error('UNSUPPORTED: ' + oFirstError.message);
+        }
+
+        throw new Error('GQL_ERROR: ' + oFirstError.message);
     }
 
     return oJson.data;
@@ -237,6 +259,61 @@ query Me {
   me { roles permissions { resource actions } }
 }`;
 
+const QUERY_API_VERSION = `
+query ApiVersion {
+  info { versions { core { api } } }
+}`;
+
+/* Feature queries below are separate operations so that a server without
+   one of the fields only loses that feature */
+
+const QUERY_DOCKER_WEBUI = `
+query DockerWebUi {
+  docker { containers { id webUiUrl } }
+}`;
+
+const QUERY_PARITY = `
+query ParityStatus {
+  array { parityCheckStatus { status progress speed errors correcting date } }
+}`;
+
+const QUERY_DISK_TEMP_THRESHOLDS = `
+query DiskTempThresholds {
+  info { display { hot max } }
+  array {
+    parities { id rotational }
+    disks { id rotational }
+    caches { id rotational }
+  }
+}`;
+
+const QUERY_TEMPERATURE = `
+query Temperature {
+  metrics {
+    temperature {
+      summary { average warningCount criticalCount hottest { current { value unit } } }
+    }
+  }
+}`;
+
+const QUERY_DOCKER_STATUS = `
+query DockerStatus {
+  docker { containers { id names state } }
+}`;
+
+const QUERY_DOCKER_UPDATE_STATUS = `
+query DockerUpdateStatus {
+  docker {
+    containers { id names state }
+    containerUpdateStatuses { name updateStatus }
+  }
+}`;
+
+const QUERY_VM_STATUS = `
+query VMStatus {
+  vms { domains { id state } }
+}`;
+
 const MUTATION_DOCKER_START = `
 mutation DockerStart($id: PrefixedID!) {
   docker { start(id: $id) { id state status } }
@@ -256,6 +333,57 @@ const MUTATION_VM_STOP = `
 mutation VMStop($id: PrefixedID!) {
   vm { stop(id: $id) }
 }`;
+
+const MUTATION_DOCKER_RESTART = `
+mutation DockerRestart($id: PrefixedID!) {
+  docker { restart(id: $id) { id state status } }
+}`;
+
+const MUTATION_DOCKER_PAUSE = `
+mutation DockerPause($id: PrefixedID!) {
+  docker { pause(id: $id) { id state status } }
+}`;
+
+const MUTATION_DOCKER_UNPAUSE = `
+mutation DockerUnpause($id: PrefixedID!) {
+  docker { unpause(id: $id) { id state status } }
+}`;
+
+const MUTATION_DOCKER_UPDATE = `
+mutation DockerUpdate($ids: [PrefixedID!]!) {
+  docker { updateContainers(ids: $ids) { id state } }
+}`;
+
+const MUTATION_VM_RESUME = `
+mutation VMResume($id: PrefixedID!) {
+  vm { resume(id: $id) }
+}`;
+
+const MUTATION_VM_REBOOT = `
+mutation VMReboot($id: PrefixedID!) {
+  vm { reboot(id: $id) }
+}`;
+
+const DOCKER_COMMANDS = {
+    start: MUTATION_DOCKER_START,
+    stop: MUTATION_DOCKER_STOP,
+    restart: MUTATION_DOCKER_RESTART,
+    pause: MUTATION_DOCKER_PAUSE,
+    resume: MUTATION_DOCKER_UNPAUSE
+};
+
+const VM_COMMANDS = {
+    start: MUTATION_VM_START,
+    stop: MUTATION_VM_STOP,
+    resume: MUTATION_VM_RESUME,
+    restart: MUTATION_VM_REBOOT
+};
+
+const STATUS_QUERIES = {
+    docker: QUERY_DOCKER_STATUS,
+    vm: QUERY_VM_STATUS,
+    update: QUERY_DOCKER_UPDATE_STATUS
+};
 
 const QUERY_BADGE_COUNT = `
 query BadgeCount {
@@ -331,6 +459,39 @@ const isPermissionMsg = (pMsg) => {
  * @returns {boolean}
  */
 const isPermissionError = (pErr) => isPermissionMsg(pErr.message || '');
+
+/**
+ * Checks whether an error code or GraphQL message means the server's schema lacks the requested field
+ * @param {string} pMsg - Error code (HTTP_400, UNSUPPORTED) or GraphQL error message
+ * @returns {boolean}
+ */
+const isUnsupportedMsg = (pMsg) => {
+
+    const oPattern = /^(HTTP_400|UNSUPPORTED)|GRAPHQL_VALIDATION_FAILED|Cannot query field|Unknown (argument|type)/;
+    return oPattern.test(pMsg);
+};
+
+/**
+ * Compares a parsed API version against a minimum; an unknown version is below every minimum
+ * @param {number[]|null} pVersion - [major, minor, patch], or null when unknown
+ * @param {number[]} pMin - [major, minor, patch]
+ * @returns {boolean}
+ */
+const isVersionAtLeast = (pVersion, pMin) => {
+
+    if (!pVersion) {
+        return false;
+    }
+
+    for (let nI = 0; nI < 3; nI++) {
+
+        if (pVersion[nI] !== pMin[nI]) {
+            return pVersion[nI] > pMin[nI];
+        }
+    }
+
+    return true;
+};
 
 /**
  * Checks whether a GraphQL response contains permission-related errors
@@ -429,14 +590,44 @@ browserAPI.runtime.onMessage.addListener((pMessage, pSender, pFnSendResponse) =>
 
         return true;
     }
+
+    if (sAction === 'updateContainers') {
+
+        handleUpdateContainers(pMessage).then(pFnSendResponse).catch((pErr) => {
+
+            pFnSendResponse({error: categorizeError(pErr)});
+        });
+
+        return true;
+    }
+
+    if (sAction === 'fetchStatus') {
+
+        handleFetchStatus(pMessage).then(pFnSendResponse).catch((pErr) => {
+
+            pFnSendResponse({error: categorizeError(pErr)});
+        });
+
+        return true;
+    }
+
+    if (sAction === 'refreshBadge') {
+
+        updateBadge().then(() => pFnSendResponse({success: true}));
+
+        return true;
+    }
 });
 
 /**
  * Fetches all dashboard data sections for a single server via parallel GraphQL queries
  * @param {Object} pServer - Server object with url and apiKey properties
+ * @param {Object} [pFeatures] - Version-gated features (see handleFetchDashboard); omitted = none
  * @returns {Object} Merged dashboard data from all query sections
  */
-const fetchServerDashboard = async (pServer) => {
+const fetchServerDashboard = async (pServer, pFeatures) => {
+
+    const oFeatures = pFeatures || {};
 
     const fnDockerQuery = async () => {
 
@@ -447,14 +638,30 @@ const fetchServerDashboard = async (pServer) => {
         }
     };
 
+    /* Entries marked extra are merged into their sections after the main ones */
     const aQueries = [
         {key: 'core', query: QUERY_CORE},
         {key: 'array', query: QUERY_ARRAY},
         {key: 'network', query: QUERY_NETWORK},
         {key: 'docker', query: null},
         {key: 'vms', query: QUERY_VMS},
-        {key: 'dockerUpdates', query: QUERY_DOCKER_UPDATES}
+        {key: 'parity', query: QUERY_PARITY, extra: true},
+        {key: 'diskTemps', query: QUERY_DISK_TEMP_THRESHOLDS, extra: true}
     ];
+
+    /* Flagged Docker fields fail validation below API 4.30, and temperature reads
+       before 4.37.6 can spin up sleeping disks, so these are never sent there */
+    if (oFeatures.updates) {
+        aQueries.push({key: 'dockerUpdates', query: QUERY_DOCKER_UPDATES, extra: true});
+    }
+
+    if (oFeatures.webUiUrl) {
+        aQueries.push({key: 'dockerWebUi', query: QUERY_DOCKER_WEBUI, extra: true});
+    }
+
+    if (oFeatures.temperature) {
+        aQueries.push({key: 'temperature', query: QUERY_TEMPERATURE, extra: true});
+    }
 
     const aResults = await Promise.allSettled(
         aQueries.map((pQ) => {
@@ -468,13 +675,15 @@ const fetchServerDashboard = async (pServer) => {
     );
 
     const oData = {};
+    const oExtras = {};
     let bAnyCoreData = false;
 
     aResults.forEach((pResult, pIndex) => {
 
         if (pResult.status === 'fulfilled' && pResult.value) {
 
-            if (aQueries[pIndex].key === 'dockerUpdates') {
+            if (aQueries[pIndex].extra) {
+                oExtras[aQueries[pIndex].key] = pResult.value;
                 return;
             }
 
@@ -502,12 +711,55 @@ const fetchServerDashboard = async (pServer) => {
         }
     });
 
-    const nUpdateIdx = aQueries.findIndex((pQ) => pQ.key === 'dockerUpdates');
-    const oUpdateResult = aResults[nUpdateIdx];
+    if (oData.docker) {
 
-    if (oUpdateResult?.status === 'fulfilled' && oUpdateResult.value?.docker?.containerUpdateStatuses && oData.docker) {
-        oData.docker.updateStatuses = oUpdateResult.value.docker.containerUpdateStatuses;
+        const aUpdateStatuses = oExtras.dockerUpdates?.docker?.containerUpdateStatuses;
+        const oWebUiById = {};
+
+        if (aUpdateStatuses) {
+            oData.docker.updateStatuses = aUpdateStatuses;
+        }
+
+        (oExtras.dockerWebUi?.docker?.containers || []).forEach((pC) => {
+
+            oWebUiById[pC.id] = pC.webUiUrl;
+        });
+
+        (oData.docker.containers || []).forEach((pC) => {
+
+            if (oWebUiById[pC.id]) {
+                pC.webUiUrl = oWebUiById[pC.id];
+            }
+        });
     }
+
+    if (oData.array) {
+        oData.array.parityCheckStatus = oExtras.parity?.array?.parityCheckStatus || null;
+    }
+
+    /* Unraid's default HDD temperature thresholds (Display Settings), stored in degrees C whatever the
+       display unit. SSD/NVMe and per-disk thresholds are not in the API, so only rotational disks use them. */
+    const oDisplay = oExtras.diskTemps?.info?.display;
+    const oTempArray = oExtras.diskTemps?.array;
+
+    if (oDisplay && oTempArray) {
+
+        const aRotational = [];
+
+        [oTempArray.parities, oTempArray.disks, oTempArray.caches].forEach((pDisks) => {
+
+            (pDisks || []).forEach((pDisk) => {
+
+                if (pDisk.rotational !== false) {
+                    aRotational.push(pDisk.id);
+                }
+            });
+        });
+
+        oData.diskTempThresholds = {warning: oDisplay.hot, critical: oDisplay.max, rotationalIds: aRotational};
+    }
+
+    oData.temperature = oExtras.temperature?.metrics?.temperature || null;
 
     if (!bAnyCoreData) {
 
@@ -522,9 +774,9 @@ const fetchServerDashboard = async (pServer) => {
 };
 
 /**
- * Handles the fetchDashboard message -- resolves server, detects key type, returns dashboard data
+ * Handles the fetchDashboard message -- resolves server, detects key type and API version, returns dashboard data
  * @param {Object} pMessage - Message object with serverId property
- * @returns {Object} Response with data, serverId, and keyType
+ * @returns {Object} Response with data, serverId, keyType, apiVersion, and features
  */
 const handleFetchDashboard = async (pMessage) => {
 
@@ -534,25 +786,38 @@ const handleFetchDashboard = async (pMessage) => {
         return {error: oServer ? 'KEY_MISSING' : 'NO_SERVER'};
     }
 
+    const [oMeResult, oVersionResult] = await Promise.allSettled([
+        executeGraphQL(oServer.url, oServer.apiKey, QUERY_ME),
+        executeGraphQL(oServer.url, oServer.apiKey, QUERY_API_VERSION)
+    ]);
+
     let sKeyType = 'admin';
 
-    try {
-
-        const oMeData = await executeGraphQL(oServer.url, oServer.apiKey, QUERY_ME);
-
-        if (hasPermissionErrors(oMeData)) {
-            sKeyType = 'readonly';
-        } else {
-            sKeyType = detectKeyType(oMeData);
-        }
-
-    } catch (pErr) {
-        sKeyType = isPermissionError(pErr) ? 'readonly' : 'admin';
+    if (oMeResult.status === 'fulfilled') {
+        sKeyType = hasPermissionErrors(oMeResult.value) ? 'readonly' : detectKeyType(oMeResult.value);
+    } else {
+        sKeyType = isPermissionError(oMeResult.reason) ? 'readonly' : 'admin';
     }
 
-    const oData = await fetchServerDashboard(oServer);
+    /* A failed or unparsable version counts as unknown: no gated feature is used */
+    const sApiVersion = oVersionResult.status === 'fulfilled'
+        ? oVersionResult.value?.info?.versions?.core?.api || null
+        : null;
+    const aVersionMatch = /(\d+)\.(\d+)\.(\d+)/.exec(sApiVersion || '');
+    const aVersion = aVersionMatch ? aVersionMatch.slice(1).map(Number) : null;
+    const bApi430 = isVersionAtLeast(aVersion, [4, 30, 0]);
 
-    return {data: oData, serverId: oServer.id, keyType: sKeyType};
+    const oFeatures = {
+        webUiUrl: bApi430,
+        updates: bApi430,
+        pause: bApi430,
+        restart: isVersionAtLeast(aVersion, [4, 36, 0]),
+        temperature: isVersionAtLeast(aVersion, [4, 37, 6])
+    };
+
+    const oData = await fetchServerDashboard(oServer, oFeatures);
+
+    return {data: oData, serverId: oServer.id, keyType: sKeyType, apiVersion: sApiVersion, features: oFeatures};
 };
 
 /** Fetches dashboard data for all enabled servers in parallel */
@@ -622,26 +887,26 @@ const handleTestConnection = async (pServer) => {
 };
 
 /**
- * Starts or stops a Docker container via GraphQL mutation
- * @param {Object} pMessage - Message with serverId, containerId, and command ('start'|'stop')
- * @returns {Object} Response with success flag or error
+ * Runs a mutation and classifies a failure as 'unsupported' (the schema rejects it),
+ * 'failed' (the server reported an error) or 'unknown' (no answer, the action may still run)
+ * @param {Object} pServer - Server object with url and apiKey properties
+ * @param {string} pQuery - GraphQL mutation
+ * @param {Object} [pVariables]
+ * @returns {Object} {success, data}, {error: 'PERMISSION_DENIED'}, or {error, outcome}
  */
-const handleControlDocker = async (pMessage) => {
-
-    const oServer = await getServerById(pMessage.serverId);
-
-    if (!oServer) {
-        return {error: 'NO_SERVER'};
-    }
-
-    const sQuery = pMessage.command === 'start' ? MUTATION_DOCKER_START : MUTATION_DOCKER_STOP;
+const runMutation = async (pServer, pQuery, pVariables) => {
 
     try {
 
-        const oData = await executeGraphQL(oServer.url, oServer.apiKey, sQuery, {id: pMessage.containerId});
+        const oData = await executeGraphQL(pServer.url, pServer.apiKey, pQuery, pVariables);
 
         if (hasPermissionErrors(oData)) {
             return {error: 'PERMISSION_DENIED'};
+        }
+
+        /* Partial data with errors (e.g. {docker: null}) is still a failed mutation */
+        if (oData?._errors) {
+            return {error: oData._errors[0], outcome: isUnsupportedMsg(oData._errors[0]) ? 'unsupported' : 'failed'};
         }
 
         return {success: true, data: oData};
@@ -652,43 +917,130 @@ const handleControlDocker = async (pMessage) => {
             return {error: 'PERMISSION_DENIED'};
         }
 
-        throw pErr;
+        const sError = categorizeError(pErr);
+        let sOutcome = 'failed';
+
+        if (isUnsupportedMsg(sError)) {
+            sOutcome = 'unsupported';
+        } else if (sError === 'TIMEOUT' || sError === 'UNREACHABLE' || sError.startsWith('UNKNOWN')) {
+            sOutcome = 'unknown';
+        }
+
+        return {error: sError, outcome: sOutcome};
     }
 };
 
 /**
- * Starts or stops a VM via GraphQL mutation
- * @param {Object} pMessage - Message with serverId, vmId, and command ('start'|'stop')
- * @returns {Object} Response with success flag or error
+ * Runs a Docker container command (start, stop, restart, pause, resume) via GraphQL mutation
+ * @param {Object} pMessage - Message with serverId, containerId, and command
+ * @returns {Object} Response from runMutation
+ */
+const handleControlDocker = async (pMessage) => {
+
+    const oServer = await getServerById(pMessage.serverId);
+    const sQuery = DOCKER_COMMANDS[pMessage.command];
+
+    if (!oServer || !sQuery) {
+        return {error: oServer ? 'INVALID_CONFIG' : 'NO_SERVER', outcome: 'failed'};
+    }
+
+    return runMutation(oServer, sQuery, {id: pMessage.containerId});
+};
+
+/**
+ * Runs a VM command (start, stop, resume, restart) via GraphQL mutation
+ * @param {Object} pMessage - Message with serverId, vmId, and command
+ * @returns {Object} Response from runMutation
  */
 const handleControlVM = async (pMessage) => {
 
     const oServer = await getServerById(pMessage.serverId);
+    const sQuery = VM_COMMANDS[pMessage.command];
+
+    if (!oServer || !sQuery) {
+        return {error: oServer ? 'INVALID_CONFIG' : 'NO_SERVER', outcome: 'failed'};
+    }
+
+    const oResult = await runMutation(oServer, sQuery, {id: pMessage.vmId});
+
+    /* VM mutations return a Boolean; false means the command was not accepted */
+    if (oResult.success && Object.values(oResult.data?.vm || {}).includes(false)) {
+        return {error: 'The server did not accept the command.', outcome: 'failed'};
+    }
+
+    return oResult;
+};
+
+/**
+ * Applies a change to the stored pending-update record of one server
+ * @param {string} pServerId - The server ID
+ * @param {Function} pFnChange - Receives the current record (or undefined);
+ *                              returns the new record, or null to remove it
+ */
+const changePendingUpdate = async (pServerId, pFnChange) => {
+
+    const oResult = await new Promise((pFnResolve) => browserAPI.storage.local.get(['pendingUpdates'], pFnResolve));
+    const oAll = oResult.pendingUpdates || {};
+    const oNext = pFnChange(oAll[pServerId]);
+
+    if (oNext) {
+        oAll[pServerId] = oNext;
+    } else {
+        delete oAll[pServerId];
+    }
+
+    await new Promise((pFnResolve) => browserAPI.storage.local.set({pendingUpdates: oAll}, pFnResolve));
+};
+
+/**
+ * Stores the update operation, then runs the update mutation. The server answers only after every
+ * image is pulled and recreated, usually after the 15 s timeout, so completion is decided by the
+ * popup's status checks against the stored record; only a server-reported error is recorded here.
+ * @param {Object} pMessage - Message with serverId and record {bulk, startedAt, items: {name: {id, startState}}, ...}
+ * @returns {Object} Response from runMutation
+ */
+const handleUpdateContainers = async (pMessage) => {
+
+    const oServer = await getServerById(pMessage.serverId);
 
     if (!oServer) {
-        return {error: 'NO_SERVER'};
+        return {error: 'NO_SERVER', outcome: 'failed'};
     }
 
-    const sQuery = pMessage.command === 'start' ? MUTATION_VM_START : MUTATION_VM_STOP;
+    await changePendingUpdate(pMessage.serverId, () => pMessage.record);
 
-    try {
+    const aIds = Object.values(pMessage.record.items).map((pItem) => pItem.id);
+    const oResult = await runMutation(oServer, MUTATION_DOCKER_UPDATE, {ids: aIds});
 
-        const oData = await executeGraphQL(oServer.url, oServer.apiKey, sQuery, {id: pMessage.vmId});
+    if (oResult.outcome === 'unsupported') {
 
-        if (hasPermissionErrors(oData)) {
-            return {error: 'PERMISSION_DENIED'};
-        }
+        await changePendingUpdate(pMessage.serverId, () => null);
 
-        return {success: true, data: oData};
+    } else if (oResult.outcome === 'failed' || oResult.error === 'PERMISSION_DENIED') {
 
-    } catch (pErr) {
-
-        if (isPermissionError(pErr)) {
-            return {error: 'PERMISSION_DENIED'};
-        }
-
-        throw pErr;
+        await changePendingUpdate(pMessage.serverId, (pRecord) => pRecord && {...pRecord, failMessage: oResult.error});
     }
+
+    return oResult;
+};
+
+/**
+ * Runs one narrow status query used while an action is pending
+ * @param {Object} pMessage - Message with serverId and kind ('docker', 'vm' or 'update')
+ * @returns {Object} Response with the query data
+ */
+const handleFetchStatus = async (pMessage) => {
+
+    const oServer = await getServerById(pMessage.serverId);
+    const sQuery = STATUS_QUERIES[pMessage.kind];
+
+    if (!oServer || !sQuery) {
+        return {error: oServer ? 'INVALID_CONFIG' : 'NO_SERVER'};
+    }
+
+    const oData = await executeGraphQL(oServer.url, oServer.apiKey, sQuery);
+
+    return {success: true, data: oData};
 };
 
 /**
@@ -723,24 +1075,7 @@ const handleArchiveNotification = async (pMessage) => {
         return {error: 'NO_SERVER'};
     }
 
-    try {
-
-        const oData = await executeGraphQL(oServer.url, oServer.apiKey, MUTATION_ARCHIVE_NOTIFICATION, {id: pMessage.notificationId});
-
-        if (hasPermissionErrors(oData)) {
-            return {error: 'PERMISSION_DENIED'};
-        }
-
-        return {success: true};
-
-    } catch (pErr) {
-
-        if (isPermissionError(pErr)) {
-            return {error: 'PERMISSION_DENIED'};
-        }
-
-        throw pErr;
-    }
+    return runMutation(oServer, MUTATION_ARCHIVE_NOTIFICATION, {id: pMessage.notificationId});
 };
 
 /**
@@ -756,24 +1091,7 @@ const handleArchiveAll = async (pMessage) => {
         return {error: 'NO_SERVER'};
     }
 
-    try {
-
-        const oData = await executeGraphQL(oServer.url, oServer.apiKey, MUTATION_ARCHIVE_ALL);
-
-        if (hasPermissionErrors(oData)) {
-            return {error: 'PERMISSION_DENIED'};
-        }
-
-        return {success: true};
-
-    } catch (pErr) {
-
-        if (isPermissionError(pErr)) {
-            return {error: 'PERMISSION_DENIED'};
-        }
-
-        throw pErr;
-    }
+    return runMutation(oServer, MUTATION_ARCHIVE_ALL);
 };
 
 /**
@@ -785,15 +1103,15 @@ const categorizeError = (pErr) => {
 
     const sMsg = pErr.message || '';
 
-    if (sMsg === 'AUTH_ERROR') {
-        return 'AUTH_ERROR';
+    if (sMsg === 'AUTH_ERROR' || sMsg === 'TIMEOUT') {
+        return sMsg;
     }
 
     if (sMsg.startsWith('HTTP_')) {
         return sMsg;
     }
 
-    if (sMsg.startsWith('GQL_ERROR')) {
+    if (sMsg.startsWith('GQL_ERROR') || sMsg.startsWith('UNSUPPORTED')) {
         return sMsg;
     }
 
@@ -801,7 +1119,7 @@ const categorizeError = (pErr) => {
         return 'UNREACHABLE';
     }
 
-    if (sMsg.includes('TimeoutError') || sMsg.includes('abort')) {
+    if (pErr.name === 'TimeoutError' || sMsg.includes('TimeoutError') || sMsg.includes('abort')) {
         return 'TIMEOUT';
     }
 
@@ -851,9 +1169,33 @@ const updateBadge = async () => {
     }
 };
 
+/**
+ * Creates the badge alarm when it is missing (Firefox does not keep alarms across browser restarts)
+ * and refreshes the badge when the alarm was missing or pRefresh is set. Never recreates an existing
+ * alarm, because every worker wake runs this and create() would restart the period.
+ * @param {boolean} [pRefresh] - Refresh the badge even when the alarm already exists
+ */
+const ensureBadgeAlarm = async (pRefresh) => {
+
+    const oAlarm = await browserAPI.alarms.get('badgeUpdate');
+
+    if (!oAlarm) {
+        browserAPI.alarms.create('badgeUpdate', {periodInMinutes: 5});
+    }
+
+    if (!oAlarm || pRefresh) {
+        updateBadge();
+    }
+};
+
+browserAPI.runtime.onStartup.addListener(() => {
+
+    ensureBadgeAlarm(true);
+});
+
 browserAPI.runtime.onInstalled.addListener(async () => {
 
-    browserAPI.alarms.create('badgeUpdate', {periodInMinutes: 5});
+    ensureBadgeAlarm(true);
 
     const oResult = await new Promise((resolve) => {
         browserAPI.storage.local.get(['servers'], resolve);
@@ -896,3 +1238,5 @@ browserAPI.alarms.onAlarm.addListener((pAlarm) => {
         updateBadge();
     }
 });
+
+ensureBadgeAlarm();

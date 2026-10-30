@@ -593,6 +593,118 @@ body.theme-dark .ut-icon-moon {
     border-color: var(--ut-accent);
 }
 
+.ut-item-action:focus-visible,
+.ut-menu-item:focus-visible {
+    outline: 2px solid var(--ut-accent);
+    outline-offset: 1px;
+}
+
+.ut-item-action[aria-expanded="true"] {
+    color: var(--ut-accent);
+    border-color: var(--ut-accent);
+    background: var(--ut-accent-light);
+}
+
+.ut-item-row--note {
+    flex-wrap: wrap;
+}
+
+.ut-item-note {
+    flex-basis: 100%;
+    padding: 2px 0 0 12px;
+    font-size: 10px;
+    color: var(--ut-text-muted);
+}
+
+.ut-item-note--error {
+    color: var(--ut-status-error);
+}
+
+.ut-item-note--success {
+    color: var(--ut-status-ok);
+}
+
+.ut-btn-spinner {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: ut-spin 0.8s linear infinite;
+}
+
+.ut-menu {
+    position: fixed;
+    z-index: 50;
+    display: flex;
+    flex-direction: column;
+    min-width: 110px;
+    padding: 3px 0;
+    background: var(--ut-bg-card);
+    border: 1px solid var(--ut-border);
+    border-radius: var(--ut-radius-sm);
+    box-shadow: var(--ut-shadow-hover);
+}
+
+.ut-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    border: none;
+    background: none;
+    font-family: var(--ut-font);
+    font-size: 11px;
+    color: var(--ut-text);
+    text-align: left;
+    cursor: pointer;
+}
+
+.ut-menu-item .ut-icon {
+    width: 12px;
+    height: 12px;
+    color: var(--ut-text-muted);
+}
+
+.ut-menu-item:hover,
+.ut-menu-item:focus-visible {
+    background: var(--ut-accent-light);
+}
+
+.ut-stale-strip {
+    padding: 6px 10px;
+    font-size: 11px;
+    line-height: 1.4;
+    border-radius: var(--ut-radius-sm);
+    background: var(--ut-status-warning-bg);
+    color: var(--ut-text);
+    border: 1px solid var(--ut-status-warning);
+}
+
+.ut-confirm {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+    padding: 6px 8px;
+    font-size: 11px;
+    border-radius: var(--ut-radius-sm);
+    background: var(--ut-accent-light);
+}
+
+.ut-confirm-text {
+    flex: 1;
+}
+
+.ut-btn-sm:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    color: var(--ut-text-muted);
+    border-color: var(--ut-border);
+    background: none;
+}
+
 .ut-modal-backdrop {
     position: fixed;
     top: 0;
@@ -1612,4 +1724,12 @@ body.ut-compact .ut-server-item-url {
     border-left: 2px solid var(--ut-text-muted);
     border-bottom: 2px solid var(--ut-text-muted);
     opacity: 0.5;
+}
+
+.ut-text-warning {
+    color: var(--ut-status-warning);
+}
+
+.ut-text-error {
+    color: var(--ut-status-error);
 }
