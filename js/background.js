@@ -218,9 +218,9 @@ query Array {
       kilobytes { free used total }
       disks { free used total }
     }
-    parities { id name status temp numErrors isSpinning }
-    disks { id name status temp numErrors isSpinning }
-    caches { id name status temp numErrors isSpinning }
+    parities { id name status temp numErrors isSpinning rotational }
+    disks { id name status temp numErrors isSpinning rotational }
+    caches { id name status temp numErrors isSpinning rotational }
   }
 }`;
 
@@ -280,11 +280,6 @@ query ParityStatus {
 const QUERY_DISK_TEMP_THRESHOLDS = `
 query DiskTempThresholds {
   info { display { hot max } }
-  array {
-    parities { id rotational }
-    disks { id rotational }
-    caches { id rotational }
-  }
 }`;
 
 const QUERY_TEMPERATURE = `
@@ -740,23 +735,9 @@ const fetchServerDashboard = async (pServer, pFeatures) => {
     /* Unraid's default HDD temperature thresholds (Display Settings), stored in degrees C whatever the
        display unit. SSD/NVMe and per-disk thresholds are not in the API, so only rotational disks use them. */
     const oDisplay = oExtras.diskTemps?.info?.display;
-    const oTempArray = oExtras.diskTemps?.array;
 
-    if (oDisplay && oTempArray) {
-
-        const aRotational = [];
-
-        [oTempArray.parities, oTempArray.disks, oTempArray.caches].forEach((pDisks) => {
-
-            (pDisks || []).forEach((pDisk) => {
-
-                if (pDisk.rotational !== false) {
-                    aRotational.push(pDisk.id);
-                }
-            });
-        });
-
-        oData.diskTempThresholds = {warning: oDisplay.hot, critical: oDisplay.max, rotationalIds: aRotational};
+    if (oDisplay) {
+        oData.diskTempThresholds = {warning: oDisplay.hot, critical: oDisplay.max};
     }
 
     oData.temperature = oExtras.temperature?.metrics?.temperature || null;

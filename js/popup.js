@@ -1217,7 +1217,6 @@ const runPopupLogic = async () => {
 
         const oGrid = buildEl('div', 'ut-disk-grid');
         const oThresholds = oCurrentData.diskTempThresholds || {};
-        const oRotational = new Set(oThresholds.rotationalIds || []);
 
         aActive.forEach((pDisk) => {
 
@@ -1226,7 +1225,7 @@ const runPopupLogic = async () => {
             const sName = pDisk.name || '?';
 
             /* Thresholds are the HDD defaults, so SSD/NVMe chips keep the plain coloring */
-            const bRotational = oRotational.has(pDisk.id);
+            const bRotational = pDisk.rotational !== false;
             const bWarnSet = bRotational && typeof oThresholds.warning === 'number';
             const bCritSet = bRotational && typeof oThresholds.critical === 'number';
 
