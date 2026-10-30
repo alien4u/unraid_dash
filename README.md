@@ -32,7 +32,7 @@ Supports multiple servers, configurable auto-refresh, per-card visibility and so
 
 - **Array** - Array state, total capacity with usage bar, per-disk health indicators with temperature and error counts, parity and cache pools. Hard drive chips turn orange/red at Unraid's default disk temperature warning/critical thresholds (SSD/NVMe chips are not colored by temperature, as their thresholds are not available from the API). Parity check status: progress and speed while running, paused state, or the last check result.
 
-- **Docker** - All containers with running/stopped/paused status, start/stop/resume controls, and a More menu with Restart (API 4.36+) and Pause (API 4.30+). WebUI links from the Unraid template (API 4.30+) with port detection as fallback, per-container URL overrides, update indicators, and one-click Update or Update all (API 4.30+, admin key) that keeps tracking progress after the popup is closed.
+- **Docker** - All containers with running/stopped/paused status, start/stop/resume controls, and a More menu with Restart (API 4.36+) and Pause (API 4.30+). WebUI links from the Unraid template (API 4.30+) with port detection as fallback, per-container URL overrides, update indicators, and one-click Update or Update all (API 4.30+, admin key); progress is restored when the popup is reopened.
 
 - **VMs** - All virtual machines with running/stopped/paused status, start/stop/resume controls, and Restart from the More menu.
 
@@ -163,7 +163,7 @@ Chrome, Edge, and Firefox (MV3, 142+).
 
 - Container WebUI links from the Unraid template, with port detection as fallback (API 4.30+)
 - Update one container or all containers from the popup (API 4.30+, admin key)
-- Restart and pause/resume for containers, restart and resume for VMs, via a new More menu
+- Container Restart and Pause and VM Restart via a new More menu; paused containers and VMs get Resume in place of Start
 - Parity check progress, speed and last result on the Array card
 - System temperature summary (API 4.37.6+) and hard drive temperature warning/critical colors
 - Fixed saving and editing servers on Firefox, and editing a server no longer deletes it when the permission prompt is denied

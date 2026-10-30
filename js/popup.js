@@ -70,7 +70,7 @@ const runPopupLogic = async () => {
         start: ['RUNNING'],
         resume: ['RUNNING'],
         pause: ['PAUSED'],
-        stop: ['EXITED', 'SHUTOFF', 'SHUTDOWN']
+        stop: ['EXITED', 'SHUTOFF']
     };
 
     const TOGGLE_BUTTONS = {
@@ -174,7 +174,9 @@ const runPopupLogic = async () => {
        and drop their UI effect when the view or request has moved on */
     let nViewGen = 0;
     let nFetchGen = 0;
+    let nAppliedGen = 0;
     let nNotifGen = 0;
+    let oDashInFlight = {};
 
     let nLastDataTime = 0;
     let oFeatures = {};
@@ -702,6 +704,7 @@ const runPopupLogic = async () => {
 
         nViewGen++;
         nNotifGen++;
+        nAppliedGen = nFetchGen;
 
         Object.values(oPollTimers).forEach((pTimer) => clearTimeout(pTimer));
         oPollTimers = {};
@@ -751,6 +754,8 @@ const runPopupLogic = async () => {
         const nGen = nFetchGen;
         const sReqServerId = sActiveServerId;
 
+        oDashInFlight[sReqServerId] = (oDashInFlight[sReqServerId] || 0) + 1;
+
         chrome.runtime.sendMessage({
             action: 'fetchDashboard',
             serverId: sReqServerId
@@ -758,9 +763,15 @@ const runPopupLogic = async () => {
 
             const sLastError = chrome.runtime.lastError?.message;
 
-            if (nGen !== nFetchGen || sReqServerId !== sActiveServerId) {
+            oDashInFlight[sReqServerId]--;
+
+            /* Only a response older than one already applied is stale; dropping every response
+               superseded by a newer request would starve a server slower than the refresh interval */
+            if (sReqServerId !== sActiveServerId || nGen <= nAppliedGen) {
                 return;
             }
+
+            nAppliedGen = nGen;
 
             let sError = pResponse?.error;
 
@@ -836,6 +847,10 @@ const runPopupLogic = async () => {
 
         const aOrder = oSettings.cardOrder || DEFAULT_SETTINGS.cardOrder;
 
+        /* Re-appending a card that is already in place would drop keyboard focus inside it */
+        const sDomOrder = [...oDashboard.querySelectorAll(':scope > .ut-card')].map((pC) => pC.dataset.card).join();
+        const bInOrder = sDomOrder === aOrder.filter((pKey) => oCardMap[pKey]).join();
+
         aOrder.forEach((pKey) => {
 
             const oCard = oCardMap[pKey];
@@ -845,7 +860,10 @@ const runPopupLogic = async () => {
             }
 
             oCard.style.display = oVis[pKey] ? '' : 'none';
-            oDashboard.appendChild(oCard);
+
+            if (!bInOrder) {
+                oDashboard.appendChild(oCard);
+            }
 
             if (oVis[pKey] && oRenderMap[pKey]) {
                 oRenderMap[pKey]();
@@ -1614,7 +1632,7 @@ const runPopupLogic = async () => {
     /** Renders the Docker card with container list, status, and update badges */
     const renderDockerCard = () => {
 
-        closeMoreMenu(false);
+        const oFocus = captureRowFocus(oCardDocker);
 
         const sServerId = sActiveServerId;
         const bDockerAvailable = oCurrentData.docker !== null && oCurrentData.docker !== undefined;
@@ -1771,6 +1789,7 @@ const runPopupLogic = async () => {
             });
         }
 
+        restoreRowFocus(oCardDocker, oFocus);
     };
 
     /**
@@ -2127,6 +2146,70 @@ const runPopupLogic = async () => {
     };
 
     /**
+     * Records which control of a list card has focus or an open More menu before the card is rebuilt,
+     * and closes that card's menu (its button is about to be replaced)
+     * @param {HTMLElement} pCard - The Docker or VMs card
+     * @returns {Object|null} {sAction, sKey, bMenu, nMenuItem}, or null when nothing in the card is focused or open
+     */
+    const captureRowFocus = (pCard) => {
+
+        const oActive = document.activeElement;
+        const oAnchor = oOpenMenu && pCard.contains(oOpenMenu.oAnchor) ? oOpenMenu.oAnchor : null;
+        const oTarget = oAnchor || (pCard.contains(oActive) ? oActive : null);
+
+        if (!oTarget?.dataset?.action) {
+            return null;
+        }
+
+        const oState = {
+            sAction: oTarget.dataset.action,
+            sKey: oTarget.dataset.key || oTarget.dataset.name || oTarget.dataset.id || oTarget.dataset.cardType || '',
+            bMenu: !!oAnchor,
+            nMenuItem: oAnchor ? [...oOpenMenu.oMenu.children].indexOf(oActive) : -1
+        };
+
+        if (oAnchor) {
+            closeMoreMenu(false);
+        }
+
+        return oState;
+    };
+
+    /**
+     * Puts focus, and the More menu if it was open, back on the matching control of a rebuilt list card
+     * @param {HTMLElement} pCard - The Docker or VMs card
+     * @param {Object|null} pState - Result of captureRowFocus
+     */
+    const restoreRowFocus = (pCard, pState) => {
+
+        if (!pState) {
+            return;
+        }
+
+        const oTarget = [...pCard.querySelectorAll('[data-action]')].find((pEl) => {
+
+            const sKey = pEl.dataset.key || pEl.dataset.name || pEl.dataset.id || pEl.dataset.cardType || '';
+            return pEl.dataset.action === pState.sAction && sKey === pState.sKey;
+        });
+
+        if (!oTarget) {
+            return;
+        }
+
+        if (pState.bMenu && !oTarget.disabled) {
+
+            toggleMoreMenu(oTarget);
+
+            /* Back on the same menu item, or on the More button if focus was there */
+            const oItem = oOpenMenu?.oMenu.children[pState.nMenuItem];
+            (oItem || oTarget).focus();
+            return;
+        }
+
+        oTarget.focus();
+    };
+
+    /**
      * Re-renders the Docker or VMs card when the given server is still the one on screen
      * @param {string} pServerId - Server the change belongs to
      * @param {string} pKind - 'docker', 'update' or 'vm'
@@ -2200,11 +2283,11 @@ const runPopupLogic = async () => {
         oServerPending[sItemKey] = oEntry;
         rerenderCard(sServerId, pKind);
 
-        const oMessage = pKind === 'docker'
+        const oRequest = pKind === 'docker'
             ? {action: 'controlDocker', serverId: sServerId, containerId: pId, command: pAction}
             : {action: 'controlVM', serverId: sServerId, vmId: pId, command: pAction};
 
-        chrome.runtime.sendMessage(oMessage, (pResponse) => {
+        chrome.runtime.sendMessage(oRequest, (pResponse) => {
 
             const bNoAnswer = !!chrome.runtime.lastError || !pResponse;
 
@@ -2346,22 +2429,19 @@ const runPopupLogic = async () => {
     };
 
     /**
-     * Writes the update operation of a server to storage, or removes it once it is finished
+     * Sends the update operation of a server to the background, which stores it (or removes it once
+     * finished); the background is the only writer of pendingUpdates
      * @param {string} pServerId - The server ID
      */
     const persistUpdateOp = (pServerId) => {
 
-        chrome.storage.local.get(['pendingUpdates'], (pResult) => {
+        chrome.runtime.sendMessage({
+            action: 'savePendingUpdate',
+            serverId: pServerId,
+            record: oUpdateOps[pServerId] || null
+        }, () => {
 
-            const oAll = pResult.pendingUpdates || {};
-
-            if (oUpdateOps[pServerId]) {
-                oAll[pServerId] = oUpdateOps[pServerId];
-            } else {
-                delete oAll[pServerId];
-            }
-
-            chrome.storage.local.set({pendingUpdates: oAll});
+            void chrome.runtime.lastError;
         });
     };
 
@@ -2684,7 +2764,7 @@ const runPopupLogic = async () => {
     /** Renders the VMs card with VM list, status dots, and control buttons */
     const renderVMsCard = () => {
 
-        closeMoreMenu(false);
+        const oFocus = captureRowFocus(oCardVMs);
 
         const bVMsAvailable = oCurrentData.vms !== null && oCurrentData.vms !== undefined;
         const aVMs = oCurrentData.vms?.domains || [];
@@ -2774,6 +2854,7 @@ const runPopupLogic = async () => {
             });
         }
 
+        restoreRowFocus(oCardVMs, oFocus);
     };
 
     /**
@@ -3809,7 +3890,7 @@ const runPopupLogic = async () => {
 
             nRefreshTimer = setInterval(() => {
 
-                if (oSettingsPanel.style.display === 'none') {
+                if (oSettingsPanel.style.display === 'none' && !oDashInFlight[sActiveServerId]) {
                     fetchAndRender(true);
                 }
 
@@ -4018,6 +4099,7 @@ const runPopupLogic = async () => {
 
     /* Saves whose permission prompt closed the popup are settled from the actual grant */
     const aStaged = bKeyError ? [] : aServers.filter((pS) => pS.pendingPermission);
+    let bStagedKept = false;
 
     for (const oStaged of aStaged) {
 
@@ -4030,6 +4112,7 @@ const runPopupLogic = async () => {
         }
 
         resolveStagedServer(oStaged.id, bGranted);
+        bStagedKept = bStagedKept || bGranted;
     }
 
     if (aStaged.length > 0) {
@@ -4039,6 +4122,10 @@ const runPopupLogic = async () => {
         }
 
         await saveStorage();
+
+        if (bStagedKept) {
+            requestBadgeRefresh();
+        }
     }
 
     applyTheme();

@@ -612,6 +612,25 @@ browserAPI.runtime.onMessage.addListener((pMessage, pSender, pFnSendResponse) =>
 
         return true;
     }
+
+    if (sAction === 'savePendingUpdate') {
+
+        /* The popup's record replaces the stored one, keeping a failure the background
+           recorded for the same operation before the popup saw it */
+        changePendingUpdate(pMessage.serverId, (pStored) => {
+
+            const oRecord = pMessage.record;
+
+            if (oRecord && !oRecord.failMessage && pStored?.startedAt === oRecord.startedAt && pStored.failMessage) {
+                return {...oRecord, failMessage: pStored.failMessage};
+            }
+
+            return oRecord;
+
+        }).then(() => pFnSendResponse({success: true}), () => pFnSendResponse({success: false}));
+
+        return true;
+    }
 });
 
 /**
@@ -952,25 +971,34 @@ const handleControlVM = async (pMessage) => {
     return oResult;
 };
 
+let pPendingUpdateWrite = Promise.resolve();
+
 /**
- * Applies a change to the stored pending-update record of one server
+ * Applies a change to the stored pending-update record of one server. The background is the only
+ * writer of pendingUpdates, and changes are chained so two read-modify-write cycles never interleave.
  * @param {string} pServerId - The server ID
  * @param {Function} pFnChange - Receives the current record (or undefined);
  *                              returns the new record, or null to remove it
+ * @returns {Promise} Resolves once this change is stored
  */
-const changePendingUpdate = async (pServerId, pFnChange) => {
+const changePendingUpdate = (pServerId, pFnChange) => {
 
-    const oResult = await new Promise((pFnResolve) => browserAPI.storage.local.get(['pendingUpdates'], pFnResolve));
-    const oAll = oResult.pendingUpdates || {};
-    const oNext = pFnChange(oAll[pServerId]);
+    pPendingUpdateWrite = pPendingUpdateWrite.catch(() => null).then(async () => {
 
-    if (oNext) {
-        oAll[pServerId] = oNext;
-    } else {
-        delete oAll[pServerId];
-    }
+        const oResult = await new Promise((pFnResolve) => browserAPI.storage.local.get(['pendingUpdates'], pFnResolve));
+        const oAll = oResult.pendingUpdates || {};
+        const oNext = pFnChange(oAll[pServerId]);
 
-    await new Promise((pFnResolve) => browserAPI.storage.local.set({pendingUpdates: oAll}, pFnResolve));
+        if (oNext) {
+            oAll[pServerId] = oNext;
+        } else {
+            delete oAll[pServerId];
+        }
+
+        await new Promise((pFnResolve) => browserAPI.storage.local.set({pendingUpdates: oAll}, pFnResolve));
+    });
+
+    return pPendingUpdateWrite;
 };
 
 /**
