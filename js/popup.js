@@ -91,7 +91,7 @@ const runPopupLogic = async () => {
     const POLL_ACTION_MAX = 20;
     const POLL_UPDATE_MS = 10000;
     const UPDATE_CAP_MS = 600000;
-    const RESTART_CAP_MS = 60000;
+    const ACTION_CAP_MS = 60000;
     const NOTE_ERROR_MS = 8000;
     const NOTE_SUCCESS_MS = 5000;
     const SUMMARY_MS = 8000;
@@ -2283,6 +2283,16 @@ const runPopupLogic = async () => {
         oServerPending[sItemKey] = oEntry;
         rerenderCard(sServerId, pKind);
 
+        /* Wall-clock cap from the start, whatever requests are still in flight */
+        setTimeout(() => {
+
+            if (oServerPending[sItemKey] === oEntry) {
+                delete oServerPending[sItemKey];
+                setRowNote(sServerId, sItemKey, 'Status unknown, refresh to check', 'info', NOTE_ERROR_MS);
+                rerenderCard(sServerId, pKind);
+            }
+        }, ACTION_CAP_MS);
+
         const oRequest = pKind === 'docker'
             ? {action: 'controlDocker', serverId: sServerId, containerId: pId, command: pAction}
             : {action: 'controlVM', serverId: sServerId, vmId: pId, command: pAction};
@@ -2355,23 +2365,14 @@ const runPopupLogic = async () => {
                     fetchAndRender(true);
                 }
 
-            } else if (pAction === 'restart') {
-
-                /* No answer: polls cannot tell a finished restart from one that never happened */
-                setTimeout(() => {
-
-                    if (oServerPending[sItemKey] === oEntry) {
-                        delete oServerPending[sItemKey];
-                        setRowNote(sServerId, sItemKey, 'Status unknown, refresh to check', 'info', NOTE_ERROR_MS);
-                        rerenderCard(sServerId, pKind);
-                    }
-                }, Math.max(0, oEntry.nStarted + RESTART_CAP_MS - Date.now()));
-
-            } else {
+            } else if (pAction !== 'restart') {
 
                 oEntry.bPoll = true;
                 scheduleStatusCheck(pKind);
             }
+
+            /* A restart without an answer is not polled (a RUNNING poll cannot tell a finished restart
+               from one that never happened) and stays pending until the action cap */
 
             rerenderCard(sServerId, pKind);
         });
@@ -3780,6 +3781,7 @@ const runPopupLogic = async () => {
 
         const sId = oServerFormId.value || ('server-' + Date.now());
         const nExisting = aServers.findIndex((pS) => pS.id === sId);
+        let sPrevUrl = null;
 
         const oServer = {
             id: sId,
@@ -3803,6 +3805,7 @@ const runPopupLogic = async () => {
 
             if (oPrev) {
                 oServer.prev = oPrev;
+                sPrevUrl = oPrev.url;
             }
 
             aServers[nExisting] = oServer;
@@ -3827,6 +3830,22 @@ const runPopupLogic = async () => {
         if (bGranted && nExisting < 0 && sActiveServerId !== sId) {
             sActiveServerId = sId;
             resetServerView();
+        }
+
+        /* A different host makes the old host's data, pending actions and update record meaningless.
+           Pending entries are cleared in place because late callbacks compare against this object. */
+        if (bGranted && sPrevUrl && new URL(sPrevUrl).origin !== new URL(sUrl).origin) {
+
+            Object.keys(oPending[sId] || {}).forEach((pKey) => delete oPending[sId][pKey]);
+            oRowNotes[sId] = {};
+            delete oUpdateOps[sId];
+            delete oUpdateSummary[sId];
+            delete oUnsupported[sId];
+            persistUpdateOp(sId);
+
+            if (sId === sActiveServerId) {
+                resetServerView();
+            }
         }
 
         await saveStorage();
