@@ -2202,11 +2202,11 @@ const runPopupLogic = async () => {
 
             /* Back on the same menu item, or on the More button if focus was there */
             const oItem = oOpenMenu?.oMenu.children[pState.nMenuItem];
-            (oItem || oTarget).focus();
+            (oItem || oTarget).focus({preventScroll: true});
             return;
         }
 
-        oTarget.focus();
+        oTarget.focus({preventScroll: true});
     };
 
     /**
@@ -2299,10 +2299,24 @@ const runPopupLogic = async () => {
 
                 delete oServerPending[sItemKey];
 
-                if (sServerId === sActiveServerId) {
-                    sCurrentKeyType = 'readonly';
-                    renderDashboard();
+                if (sServerId !== sActiveServerId) {
+                    return;
                 }
+
+                /* The reason stays readable on the row before the controls turn read-only */
+                const nGen = nViewGen;
+                const sText = 'Could not ' + pAction + ' ' + pLabel + ': ' + getErrorMessage(pResponse.error);
+
+                setRowNote(sServerId, sItemKey, sText, 'error', NOTE_ERROR_MS);
+                rerenderCard(sServerId, pKind);
+
+                setTimeout(() => {
+
+                    if (nGen === nViewGen && oCurrentData) {
+                        sCurrentKeyType = 'readonly';
+                        renderDashboard();
+                    }
+                }, NOTE_ERROR_MS);
 
                 return;
             }
@@ -2566,8 +2580,9 @@ const runPopupLogic = async () => {
 
                     const oFresh = oFreshByKey[pName];
 
-                    /* A container that was stopped before its update stays stopped after it */
-                    const bDone = !!aStatuses && !!oFresh && !UPDATE_STATUSES.includes(oUpdateByName[pName]) &&
+                    /* Only an explicit UP_TO_DATE proves the update (UNKNOWN or no entry stays pending until
+                       a failure or the cap); a container stopped before its update stays stopped after it */
+                    const bDone = !!oFresh && oUpdateByName[pName] === 'UP_TO_DATE' &&
                         (oFresh.state === 'RUNNING' || pItem.startState !== 'RUNNING');
                     const sItemKey = 'docker::' + pName;
                     const sLabel = getItemDisplayName(pName, pName);
