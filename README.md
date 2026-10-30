@@ -163,6 +163,7 @@ Chrome, Edge, and Firefox (MV3, 142+).
 
 - Fixed custom names and URL overrides being lost when Docker containers are updated or recreated (override keys now use container names instead of IDs)
 - Fixed custom sort order being lost on container recreation (same root cause)
+- Fixed sort and custom order ignoring custom display names
 - One-time automatic migration converts existing overrides and sort order to the new format
 - Server deletion now shows a confirmation dialog and cleans up all associated data (overrides, encrypted keys)
 - Fixed `chrome.permissions.request()` not firing callback on Firefox (converted to async/await)
