@@ -1,0 +1,135 @@
+{
+  "status": 200,
+  "body": {
+    "data": {
+      "docker": {
+        "containerUpdateStatuses": [
+          {
+            "name": "app-21",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-20",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-15",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-18",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-07",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-06",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-19",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-29",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-05",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-14",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-24",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-04",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-17",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-22",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-16",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-23",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-28",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-27",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-13",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-25",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-03",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-02",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-12",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-30",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-11",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-31",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-08",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-01",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-10",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-09",
+            "updateStatus": "UP_TO_DATE"
+          },
+          {
+            "name": "app-26",
+            "updateStatus": "UP_TO_DATE"
+          }
+        ]
+      }
+    }
+  }
+}

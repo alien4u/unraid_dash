@@ -1,0 +1,29 @@
+{
+  "status": 200,
+  "body": {
+    "errors": [
+      {
+        "message": "Forbidden resource",
+        "locations": [
+          {
+            "line": 1,
+            "column": 51
+          }
+        ],
+        "path": [
+          "docker",
+          "start"
+        ],
+        "extensions": {
+          "code": "FORBIDDEN",
+          "originalError": {
+            "message": "Forbidden resource",
+            "error": "Forbidden",
+            "statusCode": 403
+          }
+        }
+      }
+    ],
+    "data": null
+  }
+}

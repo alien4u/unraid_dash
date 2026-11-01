@@ -1,0 +1,14 @@
+{
+  "status": 200,
+  "body": {
+    "data": {
+      "info": {
+        "versions": {
+          "core": {
+            "api": "4.37.9+bedd403a"
+          }
+        }
+      }
+    }
+  }
+}

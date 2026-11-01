@@ -3,3 +3,11 @@ store/
 build.sh
 CHANGELOG.md
 .DS_Store
+
+# Real server responses captured by tests/tools/capture_fixtures.py
+tests/fixtures/real/
+tests/.venv/
+__pycache__/
+.pytest_cache/
+tests/artifacts/
+tests/.ruff_cache/

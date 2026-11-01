@@ -1,0 +1,14 @@
+{
+  "status": 200,
+  "body": {
+    "data": {
+      "notifications": {
+        "overview": {
+          "unread": {
+            "total": 0
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "status": 200,
+  "body": {
+    "data": {
+      "vms": {
+        "domains": [
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:ff4c2550-0fb7-2d20-b499-86f0df77d29c",
+            "state": "SHUTOFF"
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:52000b4c-9591-7466-11b8-6cc46f29f171",
+            "state": "RUNNING"
+          }
+        ]
+      }
+    }
+  }
+}

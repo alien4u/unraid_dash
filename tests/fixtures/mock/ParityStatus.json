@@ -1,0 +1,17 @@
+{
+  "status": 200,
+  "body": {
+    "data": {
+      "array": {
+        "parityCheckStatus": {
+          "status": "COMPLETED",
+          "progress": 0,
+          "speed": "0",
+          "errors": null,
+          "correcting": null,
+          "date": "2026-10-06T15:19:08.000Z"
+        }
+      }
+    }
+  }
+}

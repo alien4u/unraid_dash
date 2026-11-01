@@ -1,0 +1,127 @@
+{
+  "status": 200,
+  "body": {
+    "data": {
+      "array": {
+        "state": "STARTED",
+        "capacity": {
+          "kilobytes": {
+            "free": "22882168681",
+            "used": "45109363261",
+            "total": "67991531942"
+          },
+          "disks": {
+            "free": "25",
+            "used": "5",
+            "total": "30"
+          }
+        },
+        "parities": [
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:xe1cbc4fd92",
+            "name": "parity",
+            "status": "DISK_OK",
+            "temp": 30,
+            "numErrors": 0,
+            "isSpinning": true,
+            "rotational": true
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:xbc64def84c",
+            "name": "parity2",
+            "status": "DISK_OK",
+            "temp": 29,
+            "numErrors": 0,
+            "isSpinning": true,
+            "rotational": true
+          }
+        ],
+        "disks": [
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:x5f9b2a5182",
+            "name": "disk1",
+            "status": "DISK_OK",
+            "temp": 28,
+            "numErrors": 0,
+            "isSpinning": true,
+            "rotational": true
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:xbc3d67c4b0",
+            "name": "disk2",
+            "status": "DISK_OK",
+            "temp": null,
+            "numErrors": 0,
+            "isSpinning": false,
+            "rotational": true
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:x0faf0deba9",
+            "name": "disk3",
+            "status": "DISK_OK",
+            "temp": 27,
+            "numErrors": 0,
+            "isSpinning": true,
+            "rotational": true
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:x65f2f2443c",
+            "name": "disk4",
+            "status": "DISK_OK",
+            "temp": null,
+            "numErrors": 0,
+            "isSpinning": false,
+            "rotational": true
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:xd547dcf570",
+            "name": "disk5",
+            "status": "DISK_OK",
+            "temp": null,
+            "numErrors": 0,
+            "isSpinning": false,
+            "rotational": true
+          }
+        ],
+        "caches": [
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:x4268fa13a7",
+            "name": "cache",
+            "status": "DISK_OK",
+            "temp": 56,
+            "numErrors": 0,
+            "isSpinning": true,
+            "rotational": false
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:x3437eb971e",
+            "name": "cache2",
+            "status": "DISK_OK",
+            "temp": 50,
+            "numErrors": 0,
+            "isSpinning": true,
+            "rotational": false
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:x52b3438a0c",
+            "name": "data_ssd",
+            "status": "DISK_OK",
+            "temp": 29,
+            "numErrors": 0,
+            "isSpinning": true,
+            "rotational": false
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:x9a07711956",
+            "name": "data_ssd2",
+            "status": "DISK_OK",
+            "temp": 28,
+            "numErrors": 0,
+            "isSpinning": true,
+            "rotational": false
+          }
+        ]
+      }
+    }
+  }
+}
