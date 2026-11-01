@@ -51,7 +51,6 @@ export const fixtureHandler = (pRequest) => {
         VMStart: {vm: {start: true}},
         VMStop: {vm: {stop: true}},
         VMResume: {vm: {resume: true}},
-        VMReboot: {vm: {reboot: true}},
         ArchiveNotification: {archiveNotification: {id: 'n1'}},
         ArchiveAll: {archiveAll: {unread: {total: 0}}}
     };
@@ -64,7 +63,8 @@ export const fixtureHandler = (pRequest) => {
         return respondFixture(pRequest.variables.filter.type === 'ARCHIVE' ? 'NotificationListArchive' : 'NotificationListUnread');
     }
 
-    return respondFixture(pRequest.op);
+    /* Temperature.json is the old summary capture; the query now reads the sensor list */
+    return respondFixture(pRequest.op === 'Temperature' ? 'TemperatureSensors' : pRequest.op);
 };
 
 /**
@@ -170,6 +170,12 @@ export const loadBackground = (pOptions = {}) => {
                 aCreated.push({name: pName, ...pInfo});
                 oAlarms[pName] = {name: pName, ...pInfo};
             },
+            clear: async (pName) => {
+
+                const bExisted = pName in oAlarms;
+                delete oAlarms[pName];
+                return bExisted;
+            },
             onAlarm: {addListener: (pFn) => oListeners.alarm.push(pFn)}
         },
         action: {
@@ -224,8 +230,18 @@ export const loadBackground = (pOptions = {}) => {
     vm.runInContext(BACKGROUND_SOURCE, oContext, {filename: 'js/background.js'});
 
     const oFns = vm.runInContext(`({
-        executeGraphQL, detectKeyType, categorizeError, isVersionAtLeast, isUnsupportedMsg, updateBadge, ensureBadgeAlarm
+        executeGraphQL, detectKeyType, categorizeError, isVersionAtLeast, isUnsupportedMsg, updateBadge, ensureBadgeAlarm,
+        summarizeTemperatures
     })`, oContext);
+
+    /**
+     * Fixes Date.now inside the background context
+     * @param {number} pMs - Milliseconds since the epoch
+     */
+    const setNow = (pMs) => {
+
+        vm.runInContext('Date.now = () => ' + Number(pMs) + ';', oContext);
+    };
 
     /**
      * Dispatches a runtime message to the background listener and resolves with its response
@@ -243,6 +259,7 @@ export const loadBackground = (pOptions = {}) => {
 
     return Object.assign(oHarness, oFns, {
         send,
+        setNow,
         requests: aRequests,
         ops: () => aRequests.map((pR) => pR.op),
         storage: oLocal,

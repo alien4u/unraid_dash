@@ -114,12 +114,15 @@ describe('executeGraphQL error mapping', () => {
         await expect(run(() => respond(502, '<html>Bad Gateway</html>'))).rejects.toThrow(/^HTTP_502$/);
     });
 
-    test('partial data with errors returns the data and the messages', async () => {
+    test('partial data with errors returns the data with each message and code', async () => {
 
-        const oData = await run(() => respond(200, {data: {docker: null, vars: {name: 'Tower'}}, errors: [{message: 'Docker down'}]}));
+        const oData = await run(() => respond(200, {
+            data: {docker: null, vars: {name: 'Tower'}},
+            errors: [{message: 'Docker down'}, {message: 'Forbidden resource', extensions: {code: 'FORBIDDEN'}}]
+        }));
 
         expect(oData.vars.name).toBe('Tower');
-        expect(oData._errors).toEqual(['Docker down']);
+        expect(oData._errors).toEqual([{message: 'Docker down', code: null}, {message: 'Forbidden resource', code: 'FORBIDDEN'}]);
     });
 
     test('a validation error without data is UNSUPPORTED', async () => {
@@ -223,7 +226,7 @@ describe('fetchDashboard', () => {
         expect(oData.docker.updateStatuses).toEqual(fixture('DockerUpdates').body.data.docker.containerUpdateStatuses);
         expect(oData.array.parityCheckStatus).toEqual(fixture('ParityStatus').body.data.array.parityCheckStatus);
         expect(oData.diskTempThresholds).toEqual({warning: 45, critical: 55});
-        expect(oData.temperature).toEqual(fixture('Temperature').body.data.metrics.temperature);
+        expect(oData.temperature.summary.hottest.current).toEqual({value: 68.38, unit: 'CELSIUS'});
     });
 
     test('failing feature queries leave the rest of the dashboard (AC-43, AC-46, AC-49)', async () => {
@@ -449,8 +452,7 @@ describe('message handlers by action', () => {
     test.each([
         ['start', 'VMStart'],
         ['stop', 'VMStop'],
-        ['resume', 'VMResume'],
-        ['restart', 'VMReboot']
+        ['resume', 'VMResume']
     ])('controlVM %s sends %s', async (pCommand, pOp) => {
 
         const oBg = await setup();
@@ -468,6 +470,8 @@ describe('message handlers by action', () => {
             .toEqual({error: 'INVALID_CONFIG', outcome: 'failed'});
         expect(await oBg.send({action: 'controlVM', serverId: 'nope', vmId: 'v1', command: 'start'}))
             .toEqual({error: 'NO_SERVER', outcome: 'failed'});
+        expect(await oBg.send({action: 'controlVM', serverId: 'server-a', vmId: 'v1', command: 'restart'}))
+            .toEqual({error: 'INVALID_CONFIG', outcome: 'failed'});
         expect(oBg.requests).toEqual([]);
     });
 
@@ -504,15 +508,15 @@ describe('message handlers by action', () => {
     });
 
     test.each([
-        ['docker', 'DockerStatus'],
-        ['vm', 'VMStatus'],
-        ['update', 'DockerUpdateStatus']
-    ])('fetchStatus %s uses only the narrow %s query (AC-62)', async (pKind, pOp) => {
+        ['docker', 'DockerStatus', {}],
+        ['vm', 'VMStatus', {restarts: {}}],
+        ['update', 'DockerUpdateStatus', {}]
+    ])('fetchStatus %s uses only the narrow %s query (AC-62)', async (pKind, pOp, pExtra) => {
 
         const oBg = await setup();
         const oResult = await oBg.send({action: 'fetchStatus', serverId: 'server-a', kind: pKind});
 
-        expect(oResult).toEqual({success: true, data: fixture(pOp).body.data});
+        expect(oResult).toEqual({success: true, data: fixture(pOp).body.data, ...pExtra});
         expect(oBg.ops()).toEqual([pOp]);
     });
 
@@ -646,5 +650,372 @@ describe('pendingUpdates single writer', () => {
 
         await oBg.send({action: 'savePendingUpdate', serverId: 'server-a', record: record(60)});
         expect(oBg.storage.pendingUpdates['server-a']).toEqual(record(60));
+    });
+});
+
+describe('error classification (section 2, AC-68, AC-69)', () => {
+
+    test('a partial answer with UNAUTHENTICATED is AUTH_ERROR', async () => {
+
+        const oBg = await setup({
+            fetch: () => respond(200, {data: {vars: null}, errors: [{message: 'API key validation failed', extensions: {code: 'UNAUTHENTICATED'}}]})
+        });
+
+        await expect(oBg.executeGraphQL('http://tower-a.lan', 'k', 'query Core { vars { name } }')).rejects.toThrow(/^AUTH_ERROR$/);
+    });
+
+    test.each([
+        ['testConnection', {action: 'testConnection', server: {url: 'http://tower-a.lan', apiKey: 'wrong'}}, {error: 'AUTH_ERROR'}],
+        ['fetchNotifications', {action: 'fetchNotifications', serverId: 'server-a'}, {error: 'AUTH_ERROR'}],
+        ['fetchStatus', {action: 'fetchStatus', serverId: 'server-a', kind: 'docker'}, {error: 'AUTH_ERROR'}],
+        ['controlDocker', {action: 'controlDocker', serverId: 'server-a', containerId: 'c1', command: 'start'},
+            {error: 'AUTH_ERROR', outcome: 'failed'}]
+    ])('the real invalid-key answer is AUTH_ERROR in %s', async (pName, pMessage, pExpected) => {
+
+        const oBg = await setup({fetch: () => respondFixture('Auth_invalid')});
+        expect(await oBg.send(pMessage)).toEqual(pExpected);
+    });
+
+    test('FORBIDDEN in a partial mutation answer is PERMISSION_DENIED', async () => {
+
+        const oBody = structuredClone(fixture('Mutation_viewer_forbidden').body);
+        const oBg = await setup({fetch: withOverrides({DockerStart: () => respond(200, {...oBody, data: {docker: null}})})});
+
+        expect(await oBg.send({action: 'controlDocker', serverId: 'server-a', containerId: 'c1', command: 'start'}))
+            .toEqual({error: 'PERMISSION_DENIED'});
+    });
+
+    test('the message "Forbidden resource" without the FORBIDDEN code is a failure', async () => {
+
+        const oBg = await setup({fetch: withOverrides({DockerStart: () => respond(200, {errors: [{message: 'Forbidden resource'}], data: null})})});
+
+        expect(await oBg.send({action: 'controlDocker', serverId: 'server-a', containerId: 'c1', command: 'start'}))
+            .toEqual({error: 'GQL_ERROR: Forbidden resource', outcome: 'failed'});
+    });
+
+    test('a status query answered FORBIDDEN reports PERMISSION_DENIED', async () => {
+
+        const oBg = await setup({fetch: withOverrides({DockerStatus: () => respondFixture('Mutation_viewer_forbidden')})});
+        expect(await oBg.send({action: 'fetchStatus', serverId: 'server-a', kind: 'docker'})).toEqual({error: 'PERMISSION_DENIED'});
+    });
+
+    test.each([
+        ['without data', () => respondFixture('Mutation_viewer_forbidden')],
+        ['with partial data', () => respond(200, {
+            data: {me: null}, errors: [{message: 'Forbidden resource', extensions: {code: 'FORBIDDEN'}}]
+        })]
+    ])('a FORBIDDEN Me answer %s means a read-only key', async (pName, pFetch) => {
+
+        const oBg = await setup({fetch: withOverrides({Me: pFetch})});
+        expect((await oBg.send({action: 'fetchDashboard', serverId: 'server-a'})).keyType).toBe('readonly');
+    });
+
+    test('a Me error without a code keeps the admin controls', async () => {
+
+        const oBg = await setup({fetch: withOverrides({Me: () => gqlError('permission denied while reading roles')})});
+        expect((await oBg.send({action: 'fetchDashboard', serverId: 'server-a'})).keyType).toBe('admin');
+    });
+});
+
+describe('temperature summary (AC-67)', () => {
+
+    const sensor = (pId, pValue, pUnit = 'CELSIUS', pStatus = 'NORMAL') => ({id: pId, current: {value: pValue, unit: pUnit, status: pStatus}});
+
+    test('the captured sensor list gives avg 43, hottest 68, 4 warning', async () => {
+
+        const oBg = await setup();
+        const oSummary = oBg.summarizeTemperatures(fixture('TemperatureSensors').body.data.metrics.temperature.sensors).summary;
+
+        expect(oSummary.average).toBeCloseTo(43.399375, 6);
+        expect(oSummary.hottest.current).toEqual({value: 68.38, unit: 'CELSIUS'});
+        expect([oSummary.warningCount, oSummary.criticalCount]).toEqual([4, 0]);
+    });
+
+    test('only temp<N>_input among lm-sensors keys, plus disk: and ipmi: ids, inside the range', async () => {
+
+        const oBg = await setup();
+        const oSummary = oBg.summarizeTemperatures([
+            sensor('nct6687-isa-0a20:fan1:fan1_input', 1237, 'CELSIUS', 'CRITICAL'),
+            sensor('nct6687-isa-0a20:VIN0:in0_input', 0.99),
+            sensor('amdgpu-pci-1800:PPT:power1_input', 0.02),
+            sensor('i915-pci-0400:energy1:energy1_input', 10857457.28, 'CELSIUS', 'CRITICAL'),
+            sensor('nct6687-isa-0a20:SMBus 0:temp7_input', -63),
+            sensor('k10temp-pci-00c3:CPU Temp:temp1_input', 60),
+            sensor('disk:SERIAL01', 30, 'CELSIUS', 'WARNING'),
+            sensor('ipmi:System Temp', 45, 'CELSIUS', 'CRITICAL')
+        ]).summary;
+
+        expect(oSummary).toEqual({average: 45, warningCount: 1, criticalCount: 1, hottest: {current: {value: 60, unit: 'CELSIUS'}}});
+    });
+
+    test('FAHRENHEIT readings use the -40..302 range', async () => {
+
+        const oBg = await setup();
+        const oSummary = oBg.summarizeTemperatures([
+            sensor('disk:A', 302, 'FAHRENHEIT'),
+            sensor('disk:B', 98, 'FAHRENHEIT'),
+            sensor('disk:C', 303, 'FAHRENHEIT'),
+            sensor('disk:D', -41, 'FAHRENHEIT')
+        ]).summary;
+
+        expect(oSummary.average).toBe(200);
+        expect(oSummary.hottest.current).toEqual({value: 302, unit: 'FAHRENHEIT'});
+    });
+
+    test.each([
+        ['mixed units', [sensor('disk:A', 40), sensor('disk:B', 100, 'FAHRENHEIT')]],
+        ['another unit', [sensor('disk:A', 310, 'KELVIN')]],
+        ['no temperature sensor', [sensor('nct:fan1:fan1_input', 900)]],
+        ['no sensors', []],
+        ['no data', null]
+    ])('%s gives no summary (AC-46)', async (pName, pSensors) => {
+
+        const oBg = await setup();
+        expect(oBg.summarizeTemperatures(pSensors)).toBeNull();
+    });
+});
+
+describe('VM restart coordinator (AC-70 to AC-72)', () => {
+
+    const VM_ID = fixture('VMs').body.data.vms.domains[1].id;
+    const KEY = 'server-a::' + VM_ID;
+    const MINUTE = 60000;
+
+    /**
+     * Handler for one VM whose state the test controls; stop moves it to SHUTDOWN, start does not change it
+     * @param {Object} pVm - {state}
+     * @param {Object} [pOverrides] - {op: (request) => Response}
+     * @returns {Function}
+     */
+    const vmHandler = (pVm, pOverrides = {}) => withOverrides({
+        VMStatus: () => respond(200, {data: {vms: {domains: [{id: VM_ID, state: pVm.state}]}}}),
+        VMStop: () => {
+
+            pVm.state = 'SHUTDOWN';
+            return respond(200, {data: {vm: {stop: true}}});
+        },
+        VMStart: () => respond(200, {data: {vm: {start: true}}}),
+        ...pOverrides
+    });
+
+    /**
+     * Background with one RUNNING VM, a restart already requested at pStartedAt
+     * @param {Object} pVm - {state}
+     * @param {Object} [pOverrides] - Handler overrides
+     * @param {number} [pStartedAt] - Clock at the restart request
+     * @returns {Promise<Object>} Harness
+     */
+    const restarted = async (pVm, pOverrides, pStartedAt = 1000) => {
+
+        const oBg = await setup({fetch: vmHandler(pVm, pOverrides)});
+
+        oBg.setNow(pStartedAt);
+        await oBg.send({action: 'restartVM', serverId: 'server-a', vmId: VM_ID, name: 'vm-2'});
+
+        return oBg;
+    };
+
+    const check = (pBg) => pBg.send({action: 'fetchStatus', serverId: 'server-a', kind: 'vm'});
+
+    test('restartVM stores the record before vm.stop and starts the one-minute alarm', async () => {
+
+        let oAtStop = null;
+        const oBg = await setup({
+            fetch: withOverrides({
+                VMStop: () => {
+
+                    oAtStop = structuredClone(oBg.storage.pendingRestarts);
+                    return respond(200, {data: {vm: {stop: true}}});
+                }
+            })
+        });
+
+        oBg.setNow(1000);
+        await oBg.send({action: 'restartVM', serverId: 'server-a', vmId: VM_ID, name: 'vm-2'});
+
+        const oRecord = {serverId: 'server-a', vmId: VM_ID, name: 'vm-2', phase: 'stopping', phaseStartedAt: 1000, outcome: null};
+
+        expect(oAtStop).toEqual({[KEY]: oRecord});
+        expect(oBg.ops()).toEqual(['VMStop']);
+        expect(oBg.alarms.vmRestart).toEqual({name: 'vmRestart', periodInMinutes: 1});
+        expect(oBg.ops()).not.toContain('VMReboot');
+    });
+
+    test('a second request while the restart runs sends nothing', async () => {
+
+        const oBg = await restarted({state: 'RUNNING'});
+        const oResult = await oBg.send({action: 'restartVM', serverId: 'server-a', vmId: VM_ID, name: 'vm-2'});
+
+        expect(oResult.record.phase).toBe('stopping');
+        expect(oBg.ops()).toEqual(['VMStop']);
+    });
+
+    test('SHUTDOWN keeps stopping; SHUTOFF sends vm.start once even when popup checks and the alarm overlap', async () => {
+
+        const oVm = {state: 'RUNNING'};
+        const oBg = await restarted(oVm);
+
+        expect((await check(oBg)).restarts[VM_ID].phase).toBe('stopping');
+
+        oVm.state = 'SHUTOFF';
+        oBg.setNow(1000 + MINUTE);
+        oBg.listeners.alarm[0]({name: 'vmRestart'});
+        await Promise.all([check(oBg), check(oBg)]);
+        await waitFor(() => oBg.ops().filter((pOp) => pOp === 'VMStatus').length === 4);
+        await new Promise((pFnResolve) => setTimeout(pFnResolve, 50));
+
+        expect(oBg.ops().filter((pOp) => pOp === 'VMStart')).toEqual(['VMStart']);
+        expect(oBg.storage.pendingRestarts[KEY]).toMatchObject({phase: 'starting', phaseStartedAt: 1000 + MINUTE});
+    });
+
+    test('RUNNING while starting ends the restart and stops the alarm', async () => {
+
+        const oVm = {state: 'RUNNING'};
+        const oBg = await restarted(oVm);
+
+        oVm.state = 'SHUTOFF';
+        await check(oBg);
+        oVm.state = 'RUNNING';
+        const oResponse = await check(oBg);
+
+        expect(oResponse.restarts).toEqual({});
+        expect(oBg.storage.pendingRestarts).toEqual({});
+        expect(oBg.alarms.vmRestart).toBeUndefined();
+    });
+
+    test.each([
+        ['stop', 'a GraphQL error', {VMStop: () => gqlError('Requested operation is not valid: domain is not running')},
+            'GQL_ERROR: Requested operation is not valid: domain is not running'],
+        ['stop', 'false', {VMStop: () => respond(200, {data: {vm: {stop: false}}})}, 'The server did not accept the command.'],
+        ['start', 'a GraphQL error', {VMStart: () => gqlError('internal error: process exited while connecting to monitor')},
+            'GQL_ERROR: internal error: process exited while connecting to monitor'],
+        ['start', 'false', {VMStart: () => respond(200, {data: {vm: {start: false}}})}, 'The server did not accept the command.']
+    ])('%s answered with %s ends the restart as failed', async (pStep, pName, pOverrides, pError) => {
+
+        const oVm = {state: 'RUNNING'};
+        const oBg = await restarted(oVm, pOverrides);
+
+        if (pStep === 'start') {
+            oVm.state = 'SHUTOFF';
+            await check(oBg);
+        }
+
+        const oRecord = (await check(oBg)).restarts[VM_ID];
+
+        expect(oRecord).toMatchObject({phase: 'done', outcome: {result: 'failed', error: pError}});
+        expect(oBg.ops().filter((pOp) => pOp === 'VMStart').length).toBe(pStep === 'start' ? 1 : 0);
+        expect(oBg.alarms.vmRestart).toBeUndefined();
+    });
+
+    test('no answer to vm.stop is not a failure', async () => {
+
+        const oBg = await restarted({state: 'RUNNING'}, {
+            VMStop: () => {
+                throw new DOMException('signal timed out', 'TimeoutError');
+            }
+        });
+
+        expect(oBg.storage.pendingRestarts[KEY].phase).toBe('stopping');
+    });
+
+    test('stopping past 5 minutes without SHUTOFF ends as did-not-shut-down and sends nothing more', async () => {
+
+        const oVm = {state: 'RUNNING'};
+        const oBg = await restarted(oVm);
+
+        oVm.state = 'SHUTDOWN';
+        oBg.setNow(1000 + 5 * MINUTE);
+        const oRecord = (await check(oBg)).restarts[VM_ID];
+
+        expect(oRecord).toMatchObject({phase: 'done', outcome: {result: 'failed', error: 'the VM did not shut down'}});
+        expect(oBg.ops()).not.toContain('VMStart');
+    });
+
+    test('a late check starts a VM that is already SHUTOFF instead of expiring it', async () => {
+
+        const oVm = {state: 'RUNNING'};
+        const oBg = await restarted(oVm);
+
+        oVm.state = 'SHUTOFF';
+        oBg.setNow(1000 + 9 * MINUTE);
+        expect((await check(oBg)).restarts[VM_ID].phase).toBe('starting');
+        expect(oBg.ops()).toContain('VMStart');
+    });
+
+    test('starting past 5 minutes without RUNNING ends as unknown', async () => {
+
+        const oVm = {state: 'RUNNING'};
+        const oBg = await restarted(oVm);
+
+        oVm.state = 'SHUTOFF';
+        oBg.setNow(2000);
+        await check(oBg);
+        oBg.setNow(2000 + 5 * MINUTE);
+
+        expect((await check(oBg)).restarts[VM_ID]).toMatchObject({phase: 'done', outcome: {result: 'unknown'}});
+    });
+
+    test('the alarm finishes a restart without the popup', async () => {
+
+        const oVm = {state: 'RUNNING'};
+        const oBg = await restarted(oVm);
+
+        oVm.state = 'SHUTOFF';
+        oBg.listeners.alarm[0]({name: 'vmRestart'});
+        await waitFor(() => oBg.storage.pendingRestarts[KEY]?.phase === 'starting' && oBg.ops().includes('VMStart'));
+
+        oVm.state = 'RUNNING';
+        oBg.listeners.alarm[0]({name: 'vmRestart'});
+        await waitFor(() => !oBg.storage.pendingRestarts[KEY] && !oBg.alarms.vmRestart);
+    });
+
+    test('without a current state the alarm applies no limit', async () => {
+
+        const oVm = {state: 'RUNNING'};
+        const oBg = await restarted(oVm, {
+            VMStatus: () => {
+                throw new TypeError('Failed to fetch');
+            }
+        });
+
+        oBg.setNow(1000 + 10 * MINUTE);
+        oBg.listeners.alarm[0]({name: 'vmRestart'});
+        await waitFor(() => oBg.ops().includes('VMStatus'));
+        await new Promise((pFnResolve) => setTimeout(pFnResolve, 50));
+
+        expect(oBg.storage.pendingRestarts[KEY].phase).toBe('stopping');
+    });
+
+    test('a finished record stays until the popup clears it, and only finished records can be cleared', async () => {
+
+        const oBg = await restarted({state: 'RUNNING'}, {VMStop: () => respond(200, {data: {vm: {stop: false}}})});
+
+        await oBg.send({action: 'restartVM', serverId: 'server-a', vmId: 'other', name: 'other'});
+        expect(oBg.storage.pendingRestarts[KEY].phase).toBe('done');
+
+        await oBg.send({action: 'clearVMRestart', serverId: 'server-a', vmId: VM_ID});
+        await oBg.send({action: 'clearVMRestart', serverId: 'server-a', vmId: 'other'});
+
+        expect(Object.keys(oBg.storage.pendingRestarts)).toEqual([]);
+        expect(oBg.ops()).toEqual(['VMStop', 'VMStop']);
+    });
+
+    test('loading with a restart in progress re-creates the alarm (browser restart)', async () => {
+
+        const oRecord = {serverId: 'server-a', vmId: VM_ID, name: 'vm-2', phase: 'starting', phaseStartedAt: 1, outcome: null};
+        const oBg = await setup({extra: {pendingRestarts: {[KEY]: oRecord}}});
+
+        await waitFor(() => oBg.alarms.vmRestart);
+        expect(oBg.alarms.vmRestart.periodInMinutes).toBe(1);
+    });
+
+    test('restarts of a deleted server are dropped by the alarm', async () => {
+
+        const oRecord = {serverId: 'gone', vmId: VM_ID, name: 'vm-2', phase: 'stopping', phaseStartedAt: 1, outcome: null};
+        const oBg = await setup({extra: {pendingRestarts: {['gone::' + VM_ID]: oRecord}}});
+
+        oBg.listeners.alarm[0]({name: 'vmRestart'});
+        await waitFor(() => Object.keys(oBg.storage.pendingRestarts || {}).length === 0 && !oBg.alarms.vmRestart);
+        expect(oBg.ops()).toEqual([]);
     });
 });

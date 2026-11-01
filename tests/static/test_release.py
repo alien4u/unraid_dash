@@ -44,7 +44,7 @@ def test_build_produces_both_packages(tmp_path):
 
 
 def test_changelog_and_readme():
-    """AC-52"""
+    """AC-52, AC-73"""
     changelog_path = ROOT / 'CHANGELOG.md'
     if changelog_path.exists():
         changelog = changelog_path.read_text()
@@ -58,16 +58,20 @@ def test_changelog_and_readme():
     features = readme.split('## ✨ Features', 1)[1].split('\n## ', 1)[0]
     for phrase in ('Update all', 'WebUI links', 'Restart', 'Pause', 'Parity check', 'Temperature'):
         assert phrase in features, phrase
+    entry = readme.split(f'### v{VERSION}', 1)[1].split('\n### ', 1)[0]
+    for phrase in ('temperature sensors', 'invalid API key', 'permission denied', 'VM Restart'):
+        assert re.search(re.escape(phrase), entry, re.I), phrase
 
 
 def test_privacy_lists_new_stored_data():
-    """AC-53: per-server custom order, pending updates and the staged-save marker are listed"""
+    """AC-53, AC-73: per-server custom order, pending updates, the staged-save marker and pending VM restarts"""
     privacy = (ROOT / 'PRIVACY.md').read_text()
     section = privacy.split('## What Is Stored Locally', 1)[1].split('\n## ', 1)[0]
     assert re.search(r'custom order per server', section, re.I)
     assert re.search(r'pending container updates', section, re.I)
     assert re.search(r'pending marker', section, re.I)
-    assert re.search(r'\*\*Last updated:\*\* October 30, 2026', privacy)
+    assert re.search(r'pending VM restarts', section, re.I)
+    assert re.search(r'\*\*Last updated:\*\* November 1, 2026', privacy)
 
 
 def test_no_new_permissions_or_html_injection():

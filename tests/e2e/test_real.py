@@ -252,17 +252,18 @@ def test_real_vm_stop_start(targets, real_page, api):
 
 @pytest.mark.disruptive
 def test_real_vm_restart(targets, real_page, api):
-    """AC-37"""
+    """AC-37, AC-70 to AC-72: Restarting... through shutdown and start until RUNNING, with no note"""
     name = targets['vm'] or pytest.skip('TEST_VM is not set')
     selector = vm_row(api.vms()[name]['id'])
     real_page.open_menu(selector)
     real_page.click_menu_item('Restart')
     real_page.wait_row(selector, lambda s: s['status'] == 'Restarting...', 5, 'restart pending')
-    state = real_page.wait_row(selector, lambda s: s['status'] is None, 75, 'restart finished')
+    state = real_page.wait_row(selector, lambda s: s['status'] is None, 660, 'restart finished')
     if (state['note'] or '').startswith('Could not restart'):
-        # rebootVm gives up after 10 s while the guest keeps shutting down, so wait for SHUTOFF before teardown
-        wait_until(lambda: api.vms()[name]['state'] == 'SHUTOFF', 180, 3, 'VM SHUTOFF after the failed reboot')
-    assert state['note'] in (None, 'Status unknown, refresh to check')
+        # The guest may still be shutting down when the restart gives up, so wait for SHUTOFF before teardown
+        wait_until(lambda: api.vms()[name]['state'] == 'SHUTOFF', 180, 3, 'VM SHUTOFF after the failed restart')
+    assert state['note'] is None
+    assert state['toggle']['title'] == 'Stop' and api.vms()[name]['state'] == 'RUNNING'
 
 
 @pytest.mark.disruptive

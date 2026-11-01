@@ -28,13 +28,13 @@ Supports multiple servers, configurable auto-refresh, per-card visibility and so
 
 ### 📊 Dashboard Cards
 
-- **System** - CPU brand, cores/threads, total memory, CPU and RAM usage bars, uptime, server version, and LAN IP address. Temperature summary (average, hottest, warning/critical sensor counts) on API 4.37.6+. Clickable server name links directly to the WebGUI.
+- **System** - CPU brand, cores/threads, total memory, CPU and RAM usage bars, uptime, server version, and LAN IP address. Temperature summary (average, hottest, warning/critical sensor counts) on API 4.37.6+, computed from the temperature sensors only. Clickable server name links directly to the WebGUI.
 
 - **Array** - Array state, total capacity with usage bar, per-disk health indicators with temperature and error counts, parity and cache pools. Hard drive chips turn orange/red at Unraid's default disk temperature warning/critical thresholds (SSD/NVMe chips are not colored by temperature, as their thresholds are not available from the API). Parity check status: progress and speed while running, paused state, or the last check result.
 
 - **Docker** - All containers with running/stopped/paused status, start/stop/resume controls, and a More menu with Restart (API 4.36+) and Pause (API 4.30+). WebUI links from the Unraid template (API 4.30+) with port detection as fallback, per-container URL overrides, update indicators, and one-click Update or Update all (API 4.30+, admin key); progress is restored when the popup is reopened.
 
-- **VMs** - All virtual machines with running/stopped/paused status, start/stop/resume controls, and Restart from the More menu.
+- **VMs** - All virtual machines with running/stopped/paused status, start/stop/resume controls, and Restart from the More menu for running VMs (the VM is shut down and started again; the restart continues when the popup is closed).
 
 - **Notifications** - Unread alert, warning, and info counts. Expandable list with individual and bulk archive actions. Badge count on the extension icon.
 
@@ -173,6 +173,10 @@ Chrome, Edge, and Firefox (MV3, 142+).
 - Failed container/VM actions now show the server's error on the row; Stop stays pending until the container/VM has stopped
 - Custom sort order is now kept per server
 - Readable timeout and server error messages on every browser
+- Temperature summary computed from temperature sensors only (the API's own summary counts fans, voltages and power readings as temperatures)
+- An invalid API key shows the authentication error on Unraid 7.3, which reports it with HTTP 200
+- A server error that mentions "permission denied" (for example a Docker mount error) is shown as the error; only a key the server reports as forbidden switches the controls to view-only
+- VM Restart shuts the VM down and starts it again, so slow-to-stop guests are no longer left off; offered for running VMs only
 
 ### v1.2.0 - 2026-03-14
 

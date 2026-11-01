@@ -5,7 +5,7 @@ import time
 import pytest
 
 from browsers import docker_row, vm_row
-from helpers import open_dashboard, wait_ops
+from helpers import open_dashboard, wait_ops, watch
 from mock_server import VIEWER_KEY
 
 NARROW_DOCKER = {'DockerStatus'}
@@ -15,19 +15,6 @@ FULL_DASHBOARD = {'Core', 'Array', 'Network', 'Docker', 'DockerBasic', 'VMs', 'P
 
 def toggle(selector):
     return selector + ' [data-action="itemControl"]'
-
-
-def watch(page, selector, until, timeout=30):
-    """Samples a row until until(state) holds; returns every sampled state."""
-    states = []
-    end = time.monotonic() + timeout
-    while time.monotonic() < end:
-        state = page.row(selector)
-        states.append(state)
-        if until(state):
-            return states
-        time.sleep(0.2)
-    raise AssertionError(f'row did not settle; last state {states[-1]}')
 
 
 @pytest.mark.parametrize('mode, message', [
@@ -57,6 +44,28 @@ def test_action_error_inline(ext, mock, mode, message):
     state = page.wait_row(vm_row(vm['id']), lambda s: s['note'], 10, 'VM error note')
     assert state['note'] == 'Could not start vm-1: Requested operation is not valid: domain is already running'
     assert state['toggle']['disabled'] is False and state['toggle']['title'] == 'Start'
+
+
+@pytest.mark.parametrize('mode, message, view_only', [
+    ('forbidden', None, True),
+    ('forbidden_partial', None, True),
+    ('gql', 'error response from daemon: open /mnt/user/appdata/app-09: permission denied', False),
+])
+def test_permission_text_only_for_forbidden(ext, mock, mode, message, view_only):
+    """AC-69: the permission text and the switch to view-only controls come only from extensions.code FORBIDDEN"""
+    mock.fail('DockerStart', mode, message)
+    page = open_dashboard(ext, mock)
+    page.click(toggle(docker_row('app-09')))
+    state = page.wait_row(docker_row('app-09'), lambda s: s['note'], 10, 'error note')
+    expected = message or 'This API key does not have permission. Use an admin API key for full control.'
+    assert state['note'] == f'Could not start app-09: {expected}'
+
+    time.sleep(10)
+    toggle_state = page.docker('app-01')['toggle']
+    if view_only:
+        assert toggle_state['disabled'] and toggle_state['title'] == 'View-only API key'
+    else:
+        assert not toggle_state['disabled'] and toggle_state['title'] == 'Stop'
 
 
 def test_container_stop_start_narrow_checks(ext, mock):
@@ -114,7 +123,7 @@ def test_poll_cap_status_unknown(ext, mock):
 
 
 def test_paused_vm_resume(ext, mock):
-    """AC-18"""
+    """AC-18, AC-70 (no Restart for a paused VM)"""
     mock.set_vm('vm-2', state='PAUSED')
     vm = mock.vm('vm-2')
     page = open_dashboard(ext, mock)
@@ -122,6 +131,7 @@ def test_paused_vm_resume(ext, mock):
     state = page.vm(vm['id'])
     assert state['toggle']['title'] == 'Resume' and state['toggle']['icon'] == '#ico-resume'
     assert state['toggle']['command'] == 'resume'
+    assert state['more'] is None
 
     page.click(toggle(selector))
     state = page.wait_row(selector, lambda s: s['status'] is None and s['toggle']['command'] == 'stop', 15, 'running')
@@ -225,22 +235,6 @@ def test_container_menu_by_version(ext, mock, version, items):
     page = open_dashboard(ext, mock)
     state = page.docker('app-01')
     assert (state['more'] or {}).get('items') == items
-
-
-def test_vm_restart(ext, mock):
-    """AC-37"""
-    mock.configure(restart_seconds=3)
-    vm = mock.vm('vm-2')
-    page = open_dashboard(ext, mock)
-    selector = vm_row(vm['id'])
-    page.open_menu(selector)
-    mark = mock.mark()
-    page.click_menu_item('Restart')
-    page.wait_row(selector, lambda s: s['status'] == 'Restarting...', 5, 'restart pending')
-    state = page.wait_row(selector, lambda s: s['status'] is None, 15, 'restart finished')
-    assert state['note'] is None and state['toggle']['title'] == 'Stop'
-    ops = mock.ops(mark)
-    assert ops.count('VMReboot') == 1 and 'VMStatus' not in ops
 
 
 def test_keyboard_menu(ext, mock):

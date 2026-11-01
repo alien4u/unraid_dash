@@ -1,5 +1,6 @@
 """Shared test helpers: env file, storage seeding, dashboard setup."""
 
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -55,3 +56,16 @@ def stored(ext, key):
 
 def wait_ops(mock, since, op, count=1, timeout=10):
     return wait_until(lambda: mock.ops(since).count(op) >= count, timeout, message=f'{count}x {op} request')
+
+
+def watch(page, selector, until, timeout=30):
+    """Samples a row until until(state) holds; returns every sampled state."""
+    states = []
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        state = page.row(selector)
+        states.append(state)
+        if until(state):
+            return states
+        time.sleep(0.2)
+    raise AssertionError(f'row did not settle; last state {states[-1]}')

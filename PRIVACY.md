@@ -1,6 +1,6 @@
 # Privacy Policy - Unraid Dash
 
-**Last updated:** October 30, 2026
+**Last updated:** November 1, 2026
 
 ## Data Collection
 
@@ -19,6 +19,7 @@ The extension uses your browser's local storage (`chrome.storage.local`) to pers
 - **List settings** -- sort order and visible count for Docker and VM cards, and the custom order per server
 - **Docker URL overrides** -- custom WebUI URLs for individual containers
 - **Pending container updates** -- while an update started from the popup is in progress: server ID, container names and IDs, start time, and result counts. Removed when the update finishes.
+- **Pending VM restarts** -- while a VM restart started from the popup is in progress: server ID, VM ID and name, the current step (stopping or starting) and when it began, and the result once finished. Removed when the restart completes or its result has been shown.
 - **Unconfirmed server changes** -- while a save waits for the host permission prompt: a pending marker and the previous name, URL and (encrypted) API key, used to undo the change if permission is denied. Removed once the prompt is answered.
 
 These are stored locally in your browser and are **never transmitted** to any external server.

@@ -63,6 +63,8 @@ window.probe = {
     clearBadge: () => browserAPI.action.setBadgeText({text: ''}),
     get: (pKeys) => browserAPI.storage.local.get(pKeys),
     badge: () => browserAPI.action.getBadgeText({}),
+    alarm: (pName) => browserAPI.alarms.get(pName).then((pAlarm) => pAlarm || null),
+    fireAlarm: (pName) => Promise.resolve(browserAPI.alarms.create(pName, {when: Date.now() + 100})),
     contains: (pOrigin) => browserAPI.permissions.contains({origins: [pOrigin]}),
     send: (pMessage) => browserAPI.runtime.sendMessage(pMessage),
     request: (pOrigin) => browserAPI.permissions.request({origins: [pOrigin]})

@@ -48,7 +48,6 @@ VM_MUTATIONS = {
     'VMStart': ('start', 'RUNNING'),
     'VMStop': ('stop', 'SHUTDOWN'),
     'VMResume': ('resume', 'RUNNING'),
-    'VMReboot': ('reboot', 'RUNNING'),
 }
 
 # Provisional: built from unraid/api v4.37.9 parity-check-status.ts (speed is String(integer MB/s),
@@ -73,13 +72,30 @@ PARITY_VARIANTS = {
     'null': None,
 }
 
+def temperature_sensors(readings):
+    """metrics.temperature with one sensor per (id, value, unit, status)."""
+    return {'sensors': [{'id': sensor_id, 'current': {'value': value, 'unit': unit, 'status': status}}
+                        for sensor_id, value, unit, status in readings]}
+
+
+# Constructed sensor lists; the default is the real capture in TemperatureSensors.json
 TEMPERATURE_VARIANTS = {
-    'plausible': {'summary': {'average': 38.4, 'warningCount': 1, 'criticalCount': 0,
-                              'hottest': {'current': {'value': 56.6, 'unit': 'CELSIUS'}}}},
-    'fahrenheit': {'summary': {'average': 101.2, 'warningCount': 0, 'criticalCount': 2,
-                               'hottest': {'current': {'value': 133.9, 'unit': 'FAHRENHEIT'}}}},
-    'kelvin': {'summary': {'average': 311.5, 'warningCount': 0, 'criticalCount': 0,
-                           'hottest': {'current': {'value': 329.8, 'unit': 'KELVIN'}}}},
+    'plausible': temperature_sensors([
+        ('k10temp-pci-00c3:CPU Temp:temp1_input', 56.6, 'CELSIUS', 'WARNING'),
+        ('nct6687-isa-0a20:fan1:fan1_input', 1237, 'CELSIUS', 'CRITICAL'),
+        ('disk:SERIAL01', 38.4, 'CELSIUS', 'NORMAL'),
+        ('disk:SERIAL02', 20.2, 'CELSIUS', 'NORMAL'),
+    ]),
+    'fahrenheit': temperature_sensors([
+        ('k10temp-pci-00c3:CPU Temp:temp1_input', 133.9, 'FAHRENHEIT', 'CRITICAL'),
+        ('disk:SERIAL01', 101.2, 'FAHRENHEIT', 'CRITICAL'),
+        ('disk:SERIAL02', 68.5, 'FAHRENHEIT', 'NORMAL'),
+    ]),
+    'kelvin': temperature_sensors([('disk:SERIAL01', 311.5, 'KELVIN', 'NORMAL')]),
+    'mixed': temperature_sensors([
+        ('disk:SERIAL01', 38.4, 'CELSIUS', 'NORMAL'),
+        ('disk:SERIAL02', 101.2, 'FAHRENHEIT', 'NORMAL'),
+    ]),
     'null': None,
 }
 
@@ -146,7 +162,7 @@ class Model:
             self.unread = list(fixture_data('NotificationListUnread')['notifications']['list'])
             self.archived = list(fixture_data('NotificationListArchive')['notifications']['list'])
             self.parity = fixture_data('ParityStatus')['array']['parityCheckStatus']
-            self.temperature = fixture_data('Temperature')['metrics']['temperature']
+            self.temperature = fixture_data('TemperatureSensors')['metrics']['temperature']
             self.display = fixture_data('DiskTempThresholds')['info']['display']
             self.array = fixture_data('Array')['array']
             self.next_notification = 1
@@ -179,7 +195,8 @@ class Model:
                 entry['always'] = seconds
 
     def fail(self, op, mode, message=None, once=False):
-        """Fails an operation: http400, http500, http502, gql, gql_partial, unauth, drop or hang."""
+        """Fails an operation: http400, http500, http502, gql, gql_partial, forbidden, forbidden_partial, unauth,
+        drop or hang."""
         with self.lock:
             self.failures[op] = {'mode': mode, 'message': message, 'once': once}
 
@@ -233,7 +250,7 @@ class Model:
     def set_temperature(self, variant):
         with self.lock:
             if variant == 'real':
-                self.temperature = fixture_data('Temperature')['metrics']['temperature']
+                self.temperature = fixture_data('TemperatureSensors')['metrics']['temperature']
             else:
                 self.temperature = copy.deepcopy(TEMPERATURE_VARIANTS[variant])
 
@@ -366,6 +383,12 @@ class Model:
             return 'hang', None
         if mode == 'unauth':
             return 200, load_fixture('Auth_invalid')['body']
+        if mode in ('forbidden', 'forbidden_partial'):
+            body = copy.deepcopy(load_fixture('Mutation_viewer_forbidden')['body'])
+            body['errors'][0]['path'] = self._mutation_path(op)
+            if mode == 'forbidden_partial':
+                body['data'] = {self._mutation_path(op)[0]: None}
+            return 200, body
         if mode == 'http400':
             return 400, self._validation_error(message or 'mockField', 'Query')
         if mode.startswith('http'):
@@ -494,8 +517,7 @@ class Model:
         if self.vm_result:
             vm['state'] = state
             vm['shutdownPolls'] = self.vm_shutdown_polls if op == 'VMStop' else None
-        result = {'vm': {field: self.vm_result}}
-        return (result, self.restart_seconds) if op == 'VMReboot' else result
+        return {'vm': {field: self.vm_result}}
 
     def _op_VMStart(self, variables, role):
         return self._vm_mutation('VMStart', variables)
@@ -506,8 +528,6 @@ class Model:
     def _op_VMResume(self, variables, role):
         return self._vm_mutation('VMResume', variables)
 
-    def _op_VMReboot(self, variables, role):
-        return self._vm_mutation('VMReboot', variables)
 
     def _op_ArchiveNotification(self, variables, role):
         item = next((n for n in self.unread if n['id'] == variables.get('id')), None)

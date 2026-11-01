@@ -306,7 +306,8 @@ const runPopupLogic = async () => {
 
         const oResult = await new Promise((resolve) => {
             chrome.storage.local.get(
-                ['servers', 'settings', 'dockerUrlOverrides', 'itemNameOverrides', 'encryptedKeys', 'pendingUpdates'],
+                ['servers', 'settings', 'dockerUrlOverrides', 'itemNameOverrides', 'encryptedKeys', 'pendingUpdates',
+                    'pendingRestarts'],
                 resolve
             );
         });
@@ -358,6 +359,15 @@ const runPopupLogic = async () => {
         oSettings = {...DEFAULT_SETTINGS, ...oResult.settings};
         oSettings.customOrders = {...(oResult.settings?.customOrders || {})};
         oUpdateOps = oResult.pendingUpdates || {};
+
+        /* VM restarts run in the background; their rows stay pending until a status check returns the outcome */
+        Object.values(oResult.pendingRestarts || {}).forEach((pRecord) => {
+
+            oPending[pRecord.serverId] = oPending[pRecord.serverId] || {};
+            oPending[pRecord.serverId]['vm::' + pRecord.vmId] = {
+                sKind: 'vm', sAction: 'restart', sKey: pRecord.vmId, sLabel: pRecord.name, nChecks: 0, bPoll: true
+            };
+        });
 
         oSettings.visibleCards = {
             ...DEFAULT_SETTINGS.visibleCards,
@@ -2256,6 +2266,43 @@ const runPopupLogic = async () => {
     };
 
     /**
+     * Ends the pending state of a VM restart row. A finished record shows its outcome once and is then dropped by the
+     * background; a removed record means the restart ended, with a note only when the VM is not running.
+     * @param {string} pServerId - Server the row belongs to
+     * @param {string} pItemKey - Row key ('vm::' + VM id)
+     * @param {Object} pEntry - The pending entry
+     * @param {Object|null} pRecord - The restart record, or null when the background removed it
+     * @param {string|null} pState - VM state from the status check, if any
+     */
+    const finishVMRestart = (pServerId, pItemKey, pEntry, pRecord, pState) => {
+
+        delete oPending[pServerId][pItemKey];
+
+        if (pRecord) {
+
+            const bFailed = pRecord.outcome?.result === 'failed';
+            const sText = bFailed
+                ? 'Could not restart ' + (pEntry.sLabel || pRecord.name) + ': ' + getErrorMessage(pRecord.outcome.error)
+                : 'Status unknown, refresh to check';
+
+            setRowNote(pServerId, pItemKey, sText, bFailed ? 'error' : 'info', NOTE_ERROR_MS);
+
+            chrome.runtime.sendMessage({action: 'clearVMRestart', serverId: pServerId, vmId: pRecord.vmId}, () => {
+
+                void chrome.runtime.lastError;
+            });
+
+        } else if (pState && pState !== 'RUNNING') {
+
+            setRowNote(pServerId, pItemKey, 'Status unknown, refresh to check', 'info', NOTE_ERROR_MS);
+
+        } else if (oRowNotes[pServerId]) {
+
+            delete oRowNotes[pServerId][pItemKey];
+        }
+    };
+
+    /**
      * Sends a start/stop/pause/resume/restart command and tracks the row until the outcome is known.
      * The state is kept per server; UI effects only apply while that server is on screen.
      * @param {string} pKind - 'docker' or 'vm'
@@ -2279,9 +2326,37 @@ const runPopupLogic = async () => {
             return;
         }
 
-        const oEntry = {sKind: pKind, sAction: pAction, sKey: pKey, nStarted: Date.now(), nChecks: 0, bPoll: false};
+        const oEntry = {
+            sKind: pKind, sAction: pAction, sKey: pKey, sLabel: pLabel, nStarted: Date.now(), nChecks: 0, bPoll: false
+        };
         oServerPending[sItemKey] = oEntry;
         rerenderCard(sServerId, pKind);
+
+        /* The background stops and starts the VM and keeps the record; the 3 s VM checks follow it until it ends */
+        if (pKind === 'vm' && pAction === 'restart') {
+
+            const oRestart = {action: 'restartVM', serverId: sServerId, vmId: pId, name: pLabel};
+
+            chrome.runtime.sendMessage(oRestart, (pResponse) => {
+
+                void chrome.runtime.lastError;
+
+                if (oServerPending[sItemKey] !== oEntry) {
+                    return;
+                }
+
+                if (pResponse?.record?.phase === 'done') {
+                    finishVMRestart(sServerId, sItemKey, oEntry, pResponse.record, null);
+                } else {
+                    oEntry.bPoll = true;
+                    scheduleStatusCheck('vm');
+                }
+
+                rerenderCard(sServerId, 'vm');
+            });
+
+            return;
+        }
 
         /* Wall-clock cap from the start, whatever requests are still in flight */
         setTimeout(() => {
@@ -2540,6 +2615,19 @@ const runPopupLogic = async () => {
             if (pKind !== 'update') {
 
                 getCheckEntries(pKind).forEach(([pItemKey, pEntry]) => {
+
+                    /* A VM restart ends when the background removes its record or marks it done */
+                    if (pEntry.sAction === 'restart') {
+
+                        const oRecord = pResponse?.restarts?.[pEntry.sKey] || null;
+
+                        if (oData && (!oRecord || oRecord.phase === 'done')) {
+                            const sState = oFreshByKey[pEntry.sKey]?.state || null;
+                            finishVMRestart(sServerId, pItemKey, pEntry, oRecord, sState);
+                        }
+
+                        return;
+                    }
 
                     pEntry.nChecks++;
 
@@ -2921,7 +3009,7 @@ const runPopupLogic = async () => {
             sKey: pVM.id,
             sLabel: sName,
             sCommand: sCommand,
-            aMenu: bRunning || bPaused ? ['restart'] : [],
+            aMenu: bRunning ? ['restart'] : [],
             sPending: oPending[sActiveServerId]?.['vm::' + pVM.id]?.sAction || null
         });
 

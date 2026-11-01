@@ -117,19 +117,28 @@ const executeGraphQL = async (pUrl, pApiKey, pQuery, pVariables) => {
 
     const oJson = await oResponse.json();
 
-    /* GraphQL can return 200 with partial data + errors */
+    /* GraphQL can return 200 with partial data + errors; extensions.code decides the class, never the message */
     if (oJson.errors && oJson.errors.length > 0) {
 
+        const aErrors = oJson.errors.map((pE) => ({message: pE.message || '', code: pE.extensions?.code || null}));
+
+        /* API 4.37 answers an invalid key with HTTP 200 instead of 401 */
+        if (aErrors.some((pE) => pE.code === 'UNAUTHENTICATED')) {
+            throw new Error('AUTH_ERROR');
+        }
+
         if (oJson.data) {
-            oJson.data._errors = oJson.errors.map((pE) => pE.message);
+            oJson.data._errors = aErrors;
             return oJson.data;
         }
 
-        const oFirstError = oJson.errors[0];
+        if (aErrors.some((pE) => pE.code === 'FORBIDDEN')) {
+            throw new Error('PERMISSION_DENIED');
+        }
 
-        const bValidation = oFirstError.extensions?.code === 'GRAPHQL_VALIDATION_FAILED';
+        const oFirstError = aErrors[0];
 
-        if (bValidation || isUnsupportedMsg(oFirstError.message || '')) {
+        if (oFirstError.code === 'GRAPHQL_VALIDATION_FAILED' || isUnsupportedMsg(oFirstError.message)) {
             throw new Error('UNSUPPORTED: ' + oFirstError.message);
         }
 
@@ -286,7 +295,7 @@ const QUERY_TEMPERATURE = `
 query Temperature {
   metrics {
     temperature {
-      summary { average warningCount criticalCount hottest { current { value unit } } }
+      sensors { id current { value unit status } }
     }
   }
 }`;
@@ -354,11 +363,6 @@ mutation VMResume($id: PrefixedID!) {
   vm { resume(id: $id) }
 }`;
 
-const MUTATION_VM_REBOOT = `
-mutation VMReboot($id: PrefixedID!) {
-  vm { reboot(id: $id) }
-}`;
-
 const DOCKER_COMMANDS = {
     start: MUTATION_DOCKER_START,
     stop: MUTATION_DOCKER_STOP,
@@ -367,11 +371,11 @@ const DOCKER_COMMANDS = {
     resume: MUTATION_DOCKER_UNPAUSE
 };
 
+/* VM restart is not here: restartVM runs stop and start (vm.reboot gives up after 10 s of shutdown) */
 const VM_COMMANDS = {
     start: MUTATION_VM_START,
     stop: MUTATION_VM_STOP,
-    resume: MUTATION_VM_RESUME,
-    restart: MUTATION_VM_REBOOT
+    resume: MUTATION_VM_RESUME
 };
 
 const STATUS_QUERIES = {
@@ -435,25 +439,12 @@ const detectKeyType = (pMeData) => {
 };
 
 /**
- * Checks whether an error message string indicates a permissions issue
- * @param {string} pMsg - The error message to check
+ * Checks whether partial GraphQL data carries a FORBIDDEN error (the key lacks the permission). Message text
+ * is never used: Docker errors such as "permission denied" are server failures, not key problems.
+ * @param {Object} pData - The GraphQL response data (may contain _errors [{message, code}])
  * @returns {boolean}
  */
-const isPermissionMsg = (pMsg) => {
-
-    const sLower = pMsg.toLowerCase();
-
-    return sLower.includes('permission') || sLower.includes('forbidden') ||
-           sLower.includes('not allowed') || sLower.includes('authorized') ||
-           sLower.includes('access denied') || sLower.includes('auth_error');
-};
-
-/**
- * Checks whether an Error object represents a permissions issue
- * @param {Error} pErr - The error to check
- * @returns {boolean}
- */
-const isPermissionError = (pErr) => isPermissionMsg(pErr.message || '');
+const hasForbiddenError = (pData) => !!pData?._errors?.some((pE) => pE.code === 'FORBIDDEN');
 
 /**
  * Checks whether an error code or GraphQL message means the server's schema lacks the requested field
@@ -488,18 +479,72 @@ const isVersionAtLeast = (pVersion, pMin) => {
     return true;
 };
 
-/**
- * Checks whether a GraphQL response contains permission-related errors
- * @param {Object} pData - The GraphQL response data (may contain _errors array)
- * @returns {boolean}
- */
-const hasPermissionErrors = (pData) => {
+/* lm-sensors channels outside these ranges are unconnected (the reference server reports -63) or not temperatures */
+const TEMP_RANGES = {CELSIUS: [-40, 150], FAHRENHEIT: [-40, 302]};
 
-    if (!pData || !pData._errors) {
-        return false;
+/**
+ * Builds the temperature summary from the sensor list. The API's own summary is not used: it reports every
+ * lm-sensors *_input key (fans, voltages, power, energy) as a CELSIUS temperature.
+ * @param {Object[]} pSensors - metrics.temperature.sensors [{id, current: {value, unit, status}}]
+ * @returns {Object|null} {summary: {average, warningCount, criticalCount, hottest: {current: {value, unit}}}},
+ *                        or null when no reading qualifies or the readings do not share one unit
+ */
+const summarizeTemperatures = (pSensors) => {
+
+    const oUnits = {};
+    let nCount = 0;
+    let nSum = 0;
+    let oHottest = null;
+    let nWarning = 0;
+    let nCritical = 0;
+
+    (pSensors || []).forEach((pSensor) => {
+
+        const sChannel = String(pSensor.id || '').split(':').pop();
+        const oCurrent = pSensor.current || {};
+        const aRange = TEMP_RANGES[oCurrent.unit];
+
+        /* Among lm-sensors keys only temp<N>_input is a temperature; disk: and ipmi: ids have no _input key */
+        if (sChannel.endsWith('_input') && !/^temp\d+_input$/.test(sChannel)) {
+            return;
+        }
+
+        const bOutOfRange = aRange && (oCurrent.value < aRange[0] || oCurrent.value > aRange[1]);
+
+        if (typeof oCurrent.value !== 'number' || bOutOfRange) {
+            return;
+        }
+
+        oUnits[oCurrent.unit] = true;
+        nCount++;
+        nSum += oCurrent.value;
+
+        if (!oHottest || oCurrent.value > oHottest.value) {
+            oHottest = oCurrent;
+        }
+
+        if (oCurrent.status === 'WARNING') {
+            nWarning++;
+        } else if (oCurrent.status === 'CRITICAL') {
+            nCritical++;
+        }
+    });
+
+    const aUnits = Object.keys(oUnits);
+
+    /* Readings are shown without conversion, so they must all be CELSIUS or all FAHRENHEIT */
+    if (nCount === 0 || aUnits.length !== 1 || !TEMP_RANGES[aUnits[0]]) {
+        return null;
     }
 
-    return pData._errors.some(isPermissionMsg);
+    return {
+        summary: {
+            average: nSum / nCount,
+            warningCount: nWarning,
+            criticalCount: nCritical,
+            hottest: {current: {value: oHottest.value, unit: oHottest.unit}}
+        }
+    };
 };
 
 browserAPI.runtime.onMessage.addListener((pMessage, pSender, pFnSendResponse) => {
@@ -552,6 +597,32 @@ browserAPI.runtime.onMessage.addListener((pMessage, pSender, pFnSendResponse) =>
 
             pFnSendResponse({error: categorizeError(pErr)});
         });
+
+        return true;
+    }
+
+    if (sAction === 'restartVM') {
+
+        handleRestartVM(pMessage).then(pFnSendResponse).catch((pErr) => {
+
+            pFnSendResponse({error: categorizeError(pErr)});
+        });
+
+        return true;
+    }
+
+    if (sAction === 'clearVMRestart') {
+
+        /* A finished restart is kept until the popup has shown its outcome once */
+        changePendingRestarts((pAll) => {
+
+            const sKey = pMessage.serverId + '::' + pMessage.vmId;
+
+            if (pAll[sKey]?.phase === 'done') {
+                delete pAll[sKey];
+            }
+
+        }).then(() => pFnSendResponse({success: true}), () => pFnSendResponse({success: false}));
 
         return true;
     }
@@ -759,7 +830,7 @@ const fetchServerDashboard = async (pServer, pFeatures) => {
         oData.diskTempThresholds = {warning: oDisplay.hot, critical: oDisplay.max};
     }
 
-    oData.temperature = oExtras.temperature?.metrics?.temperature || null;
+    oData.temperature = summarizeTemperatures(oExtras.temperature?.metrics?.temperature?.sensors);
 
     if (!bAnyCoreData) {
 
@@ -794,9 +865,9 @@ const handleFetchDashboard = async (pMessage) => {
     let sKeyType = 'admin';
 
     if (oMeResult.status === 'fulfilled') {
-        sKeyType = hasPermissionErrors(oMeResult.value) ? 'readonly' : detectKeyType(oMeResult.value);
+        sKeyType = hasForbiddenError(oMeResult.value) ? 'readonly' : detectKeyType(oMeResult.value);
     } else {
-        sKeyType = isPermissionError(oMeResult.reason) ? 'readonly' : 'admin';
+        sKeyType = oMeResult.reason?.message === 'PERMISSION_DENIED' ? 'readonly' : 'admin';
     }
 
     /* A failed or unparsable version counts as unknown: no gated feature is used */
@@ -866,14 +937,14 @@ const handleTestConnection = async (pServer) => {
 
         const oMeData = await executeGraphQL(pServer.url, pServer.apiKey, QUERY_ME);
 
-        if (hasPermissionErrors(oMeData)) {
+        if (hasForbiddenError(oMeData)) {
             sKeyType = 'readonly';
         } else {
             sKeyType = detectKeyType(oMeData);
         }
 
     } catch (pErr) {
-        if (isPermissionError(pErr)) {
+        if (pErr.message === 'PERMISSION_DENIED') {
             sKeyType = 'readonly';
         }
     }
@@ -900,24 +971,30 @@ const runMutation = async (pServer, pQuery, pVariables) => {
 
         const oData = await executeGraphQL(pServer.url, pServer.apiKey, pQuery, pVariables);
 
-        if (hasPermissionErrors(oData)) {
+        if (hasForbiddenError(oData)) {
             return {error: 'PERMISSION_DENIED'};
         }
 
         /* Partial data with errors (e.g. {docker: null}) is still a failed mutation */
         if (oData?._errors) {
-            return {error: oData._errors[0], outcome: isUnsupportedMsg(oData._errors[0]) ? 'unsupported' : 'failed'};
+
+            const oFirstError = oData._errors[0];
+            const bUnsupported = oFirstError.code === 'GRAPHQL_VALIDATION_FAILED' ||
+                isUnsupportedMsg(oFirstError.message);
+
+            return {error: oFirstError.message, outcome: bUnsupported ? 'unsupported' : 'failed'};
         }
 
         return {success: true, data: oData};
 
     } catch (pErr) {
 
-        if (isPermissionError(pErr)) {
-            return {error: 'PERMISSION_DENIED'};
+        const sError = categorizeError(pErr);
+
+        if (sError === 'PERMISSION_DENIED') {
+            return {error: sError};
         }
 
-        const sError = categorizeError(pErr);
         let sOutcome = 'failed';
 
         if (isUnsupportedMsg(sError)) {
@@ -1033,10 +1110,243 @@ const handleUpdateContainers = async (pMessage) => {
     return oResult;
 };
 
+/* VM restart = vm.stop, wait for SHUTOFF, vm.start, wait for RUNNING, coordinated here so that it survives a
+   closed popup. Records live in pendingRestarts keyed serverId::vmId with phase stopping, starting or done. */
+const RESTART_ALARM = 'vmRestart';
+const RESTART_PHASE_MS = 300000;
+
+let pPendingRestartWrite = Promise.resolve();
+
 /**
- * Runs one narrow status query used while an action is pending
+ * Reads the stored VM restart records
+ * @returns {Promise<Object>} Records keyed serverId::vmId
+ */
+const readPendingRestarts = async () => {
+
+    const oResult = await new Promise((pFnResolve) => browserAPI.storage.local.get(['pendingRestarts'], pFnResolve));
+    return oResult.pendingRestarts || {};
+};
+
+/**
+ * Applies a change to the VM restart records. Like changePendingUpdate, changes are chained so they never
+ * interleave; a phase change is stored before its request is sent, so two callers cannot both send vm.start.
+ * Afterwards the restart alarm is kept only while a record is stopping or starting.
+ * @param {Function} pFnChange - Receives all records to modify in place; its return value is passed on
+ * @returns {Promise<*>} Resolves with the change's return value once it is stored
+ */
+const changePendingRestarts = (pFnChange) => {
+
+    const pWrite = pPendingRestartWrite.catch(() => null).then(async () => {
+
+        const oAll = await readPendingRestarts();
+        const oChangeResult = pFnChange(oAll);
+
+        await new Promise((pFnResolve) => browserAPI.storage.local.set({pendingRestarts: oAll}, pFnResolve));
+
+        const bActive = Object.values(oAll).some((pRecord) => pRecord.phase !== 'done');
+        const oAlarm = await browserAPI.alarms.get(RESTART_ALARM);
+
+        if (bActive && !oAlarm) {
+            browserAPI.alarms.create(RESTART_ALARM, {periodInMinutes: 1});
+        } else if (!bActive && oAlarm) {
+            await browserAPI.alarms.clear(RESTART_ALARM);
+        }
+
+        return oChangeResult;
+    });
+
+    pPendingRestartWrite = pWrite;
+
+    return pWrite;
+};
+
+/**
+ * Sends vm.stop (phase stopping) or vm.start (phase starting) for a restart and ends the record when the server
+ * rejects the command. No answer (timeout, network) is not a failure: the state checks decide.
+ * @param {Object} pServer - Server object with id, url and apiKey
+ * @param {string} pVmId - The VM id
+ * @param {string} pPhase - 'stopping' or 'starting'
+ */
+const sendRestartCommand = async (pServer, pVmId, pPhase) => {
+
+    const sMutation = pPhase === 'stopping' ? MUTATION_VM_STOP : MUTATION_VM_START;
+    const oResult = await runMutation(pServer, sMutation, {id: pVmId});
+    let sError = null;
+
+    if (oResult.success && Object.values(oResult.data?.vm || {}).includes(false)) {
+        sError = 'The server did not accept the command.';
+    } else if (!oResult.success && oResult.outcome !== 'unknown') {
+        sError = oResult.error;
+    }
+
+    if (sError) {
+
+        await changePendingRestarts((pAll) => {
+
+            const sKey = pServer.id + '::' + pVmId;
+
+            if (pAll[sKey]?.phase === pPhase) {
+                pAll[sKey] = {...pAll[sKey], phase: 'done', outcome: {result: 'failed', error: sError}};
+            }
+        });
+    }
+};
+
+/**
+ * Moves the server's restarts on from the VM states of a fresh status query: SHUTOFF while stopping starts the
+ * VM, RUNNING while starting ends the restart. The 5-minute phase limit is checked only after the current state,
+ * so a late check starts a VM that is already off instead of expiring it.
+ * @param {Object} pServer - Server object with id, url and apiKey
+ * @param {Object[]} pDomains - vms.domains [{id, state}] from the status query
+ */
+const advanceVMRestarts = async (pServer, pDomains) => {
+
+    const oStates = {};
+
+    pDomains.forEach((pDomain) => {
+
+        oStates[pDomain.id] = pDomain.state;
+    });
+
+    const aStartIds = await changePendingRestarts((pAll) => {
+
+        const nNow = Date.now();
+        const aIds = [];
+
+        Object.entries(pAll).forEach(([pKey, pRecord]) => {
+
+            if (pRecord.serverId !== pServer.id || pRecord.phase === 'done') {
+                return;
+            }
+
+            const sState = oStates[pRecord.vmId];
+
+            if (pRecord.phase === 'stopping' && sState === 'SHUTOFF') {
+
+                pAll[pKey] = {...pRecord, phase: 'starting', phaseStartedAt: nNow};
+                aIds.push(pRecord.vmId);
+
+            } else if (pRecord.phase === 'starting' && sState === 'RUNNING') {
+
+                delete pAll[pKey];
+
+            } else if (nNow - pRecord.phaseStartedAt >= RESTART_PHASE_MS) {
+
+                pAll[pKey] = {
+                    ...pRecord,
+                    phase: 'done',
+                    outcome: pRecord.phase === 'stopping'
+                        ? {result: 'failed', error: 'the VM did not shut down'}
+                        : {result: 'unknown'}
+                };
+            }
+        });
+
+        return aIds;
+    });
+
+    for (const sVmId of aStartIds) {
+        await sendRestartCommand(pServer, sVmId, 'starting');
+    }
+};
+
+/**
+ * Checks every server that has a restart in progress; runs on the restart alarm, also while the popup is closed
+ */
+const processVMRestarts = async () => {
+
+    const oAll = await readPendingRestarts();
+    const aServers = await getServersWithKeys();
+    const oServerIds = {};
+
+    Object.values(oAll).forEach((pRecord) => {
+
+        if (pRecord.phase !== 'done') {
+            oServerIds[pRecord.serverId] = true;
+        }
+    });
+
+    for (const sServerId of Object.keys(oServerIds)) {
+
+        const oServer = aServers.find((pS) => pS.id === sServerId);
+
+        if (!oServer) {
+
+            /* The server was deleted, so its restarts can no longer be checked */
+            await changePendingRestarts((pRecords) => {
+
+                Object.keys(pRecords).forEach((pKey) => {
+
+                    if (pRecords[pKey].serverId === sServerId) {
+                        delete pRecords[pKey];
+                    }
+                });
+            });
+
+            continue;
+        }
+
+        try {
+
+            const oData = await executeGraphQL(oServer.url, oServer.apiKey, QUERY_VM_STATUS);
+
+            /* Without a current state no limit is applied */
+            if (oData?.vms) {
+                await advanceVMRestarts(oServer, oData.vms.domains || []);
+            }
+
+        } catch (_) {
+            /* Unreachable now; the next alarm checks again */
+        }
+    }
+};
+
+/**
+ * Starts a coordinated VM restart: stores the record, then sends vm.stop. A VM with a restart in progress is
+ * not stopped again.
+ * @param {Object} pMessage - Message with serverId, vmId and name
+ * @returns {Object} {success, record}: the stored record, or null once the restart has ended
+ */
+const handleRestartVM = async (pMessage) => {
+
+    const oServer = await getServerById(pMessage.serverId);
+
+    if (!oServer) {
+        return {error: 'NO_SERVER', outcome: 'failed'};
+    }
+
+    const sKey = oServer.id + '::' + pMessage.vmId;
+
+    const bCreated = await changePendingRestarts((pAll) => {
+
+        if (pAll[sKey] && pAll[sKey].phase !== 'done') {
+            return false;
+        }
+
+        pAll[sKey] = {
+            serverId: oServer.id,
+            vmId: pMessage.vmId,
+            name: pMessage.name,
+            phase: 'stopping',
+            phaseStartedAt: Date.now(),
+            outcome: null
+        };
+
+        return true;
+    });
+
+    if (bCreated) {
+        await sendRestartCommand(oServer, pMessage.vmId, 'stopping');
+    }
+
+    return {success: true, record: (await readPendingRestarts())[sKey] || null};
+};
+
+/**
+ * Runs one narrow status query used while an action is pending. A VM check also moves the server's
+ * restarts on and returns their records.
  * @param {Object} pMessage - Message with serverId and kind ('docker', 'vm' or 'update')
- * @returns {Object} Response with the query data
+ * @returns {Object} Response with the query data, plus restarts {vmId: record} for kind 'vm'
  */
 const handleFetchStatus = async (pMessage) => {
 
@@ -1049,7 +1359,24 @@ const handleFetchStatus = async (pMessage) => {
 
     const oData = await executeGraphQL(oServer.url, oServer.apiKey, sQuery);
 
-    return {success: true, data: oData};
+    if (pMessage.kind !== 'vm') {
+        return {success: true, data: oData};
+    }
+
+    if (oData?.vms) {
+        await advanceVMRestarts(oServer, oData.vms.domains || []);
+    }
+
+    const oRestarts = {};
+
+    Object.values(await readPendingRestarts()).forEach((pRecord) => {
+
+        if (pRecord.serverId === oServer.id) {
+            oRestarts[pRecord.vmId] = pRecord;
+        }
+    });
+
+    return {success: true, data: oData, restarts: oRestarts};
 };
 
 /**
@@ -1112,7 +1439,7 @@ const categorizeError = (pErr) => {
 
     const sMsg = pErr.message || '';
 
-    if (sMsg === 'AUTH_ERROR' || sMsg === 'TIMEOUT') {
+    if (sMsg === 'AUTH_ERROR' || sMsg === 'TIMEOUT' || sMsg === 'PERMISSION_DENIED') {
         return sMsg;
     }
 
@@ -1200,11 +1527,13 @@ const ensureBadgeAlarm = async (pRefresh) => {
 browserAPI.runtime.onStartup.addListener(() => {
 
     ensureBadgeAlarm(true);
+    changePendingRestarts(() => null);
 });
 
 browserAPI.runtime.onInstalled.addListener(async () => {
 
     ensureBadgeAlarm(true);
+    changePendingRestarts(() => null);
 
     const oResult = await new Promise((resolve) => {
         browserAPI.storage.local.get(['servers'], resolve);
@@ -1245,7 +1574,12 @@ browserAPI.alarms.onAlarm.addListener((pAlarm) => {
 
     if (pAlarm.name === 'badgeUpdate') {
         updateBadge();
+    } else if (pAlarm.name === RESTART_ALARM) {
+        processVMRestarts();
     }
 });
 
 ensureBadgeAlarm();
+
+/* An unchanged write re-creates the restart alarm when a restart is in progress (Firefox drops alarms on quit) */
+changePendingRestarts(() => null);

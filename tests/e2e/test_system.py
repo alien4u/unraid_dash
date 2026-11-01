@@ -22,6 +22,14 @@ def test_temperature_real_summary_is_plausible(ext, mock):
     assert values and all(value < 150 for value in values), row
 
 
+def test_temperature_from_sensors(ext, mock):
+    """AC-67: the summary is computed from the captured sensor list (temp<N>_input, disk: and ipmi: ids only)"""
+    page = open_dashboard(ext, mock)
+    assert temp_row(page) == 'avg 43°C - hottest 68°C, 4 warning'
+    assert page.texts('#cardSystem .ut-detail-value .ut-text-warning') == ['4 warning']
+    assert page.texts('#cardSystem .ut-detail-value .ut-text-error') == []
+
+
 @pytest.mark.parametrize('variant, expected, warning, critical', [
     ('plausible', 'avg 38°C - hottest 57°C, 1 warning', ['1 warning'], []),
     ('fahrenheit', 'avg 101°F - hottest 134°F, 2 critical', [], ['2 critical']),
@@ -35,10 +43,10 @@ def test_temperature_summary_format(ext, mock, variant, expected, warning, criti
     assert page.texts('#cardSystem .ut-detail-value .ut-text-error') == critical
 
 
-@pytest.mark.parametrize('setup', ['kelvin', 'null', 'http400', '4.37.5', 'unknown_version'])
+@pytest.mark.parametrize('setup', ['kelvin', 'mixed', 'null', 'http400', '4.37.5', 'unknown_version'])
 def test_temperature_hidden(ext, mock, setup):
-    """AC-45 (other units hide the row), AC-46 (old/unknown API never asks; null or failing hides the row)"""
-    if setup in ('kelvin', 'null'):
+    """AC-45, AC-67 (other or mixed units hide the row), AC-46 (old/unknown API never asks; null or failing hides the row)"""
+    if setup in ('kelvin', 'mixed', 'null'):
         mock.set_temperature(setup)
     elif setup == 'http400':
         mock.fail('Temperature', 'http400', 'temperature')
