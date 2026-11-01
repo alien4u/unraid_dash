@@ -215,7 +215,14 @@ class BasePage:
                   5, 'server form')
 
     def open_menu(self, row_selector):
-        self.click(row_selector + ' [data-action="itemMore"]')
+        """Opens a row's More menu. The menu closes on scroll, so the row is scrolled into view and the scroll
+        event delivered before the click; otherwise an auto-scroll by the driver can close the menu it opened."""
+        button = row_selector + ' [data-action="itemMore"]'
+        self.eval('''(pSel) => new Promise((pFnDone) => {
+            document.querySelector(pSel).scrollIntoView({block: 'center'});
+            requestAnimationFrame(() => requestAnimationFrame(() => pFnDone(true)));
+        })''', button)
+        self.click(button)
         return self.wait(lambda: self.texts('.ut-menu[role="menu"] .ut-menu-item'), 5, 'More menu')
 
     def click_at(self, selector):

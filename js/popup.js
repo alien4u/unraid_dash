@@ -2276,7 +2276,9 @@ const runPopupLogic = async () => {
      */
     const finishVMRestart = (pServerId, pItemKey, pEntry, pRecord, pState) => {
 
-        delete oPending[pServerId][pItemKey];
+        if (oPending[pServerId]) {
+            delete oPending[pServerId][pItemKey];
+        }
 
         if (pRecord) {
 
@@ -2291,6 +2293,20 @@ const runPopupLogic = async () => {
 
                 void chrome.runtime.lastError;
             });
+
+            /* As in runItemAction: the reason stays readable on the row before the controls turn read-only */
+            if (pRecord.outcome?.error === 'PERMISSION_DENIED' && pServerId === sActiveServerId) {
+
+                const nGen = nViewGen;
+
+                setTimeout(() => {
+
+                    if (nGen === nViewGen && oCurrentData) {
+                        sCurrentKeyType = 'readonly';
+                        renderDashboard();
+                    }
+                }, NOTE_ERROR_MS);
+            }
 
         } else if (pState && pState !== 'RUNNING') {
 

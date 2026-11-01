@@ -868,6 +868,41 @@ describe('VM restart coordinator (AC-70 to AC-72)', () => {
         expect(oBg.storage.pendingRestarts[KEY]).toMatchObject({phase: 'starting', phaseStartedAt: 1000 + MINUTE});
     });
 
+    test('a status answer sent before the phase changed does not end a starting restart (NP-501)', async () => {
+
+        const oVm = {state: 'RUNNING'};
+        let fnAnswerStale = null;
+        let nStatusCalls = 0;
+        const oBg = await restarted(oVm, {
+            VMStatus: () => {
+
+                nStatusCalls++;
+
+                if (nStatusCalls === 1) {
+                    return new Promise((pFnResolve) => {
+                        fnAnswerStale = () => pFnResolve(respond(200, {data: {vms: {domains: [{id: VM_ID, state: 'RUNNING'}]}}}));
+                    });
+                }
+
+                return respond(200, {data: {vms: {domains: [{id: VM_ID, state: oVm.state}]}}});
+            }
+        });
+
+        oBg.setNow(2000);
+        const pStale = check(oBg);
+        await waitFor(() => fnAnswerStale);
+
+        oVm.state = 'SHUTOFF';
+        oBg.setNow(3000);
+        expect((await check(oBg)).restarts[VM_ID]).toMatchObject({phase: 'starting', phaseStartedAt: 3000});
+
+        fnAnswerStale();
+
+        expect((await pStale).restarts[VM_ID].phase).toBe('starting');
+        expect(oBg.storage.pendingRestarts[KEY].phase).toBe('starting');
+        expect(oBg.ops().filter((pOp) => pOp === 'VMStart')).toEqual(['VMStart']);
+    });
+
     test('RUNNING while starting ends the restart and stops the alarm', async () => {
 
         const oVm = {state: 'RUNNING'};

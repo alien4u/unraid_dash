@@ -1195,11 +1195,13 @@ const sendRestartCommand = async (pServer, pVmId, pPhase) => {
 /**
  * Moves the server's restarts on from the VM states of a fresh status query: SHUTOFF while stopping starts the
  * VM, RUNNING while starting ends the restart. The 5-minute phase limit is checked only after the current state,
- * so a late check starts a VM that is already off instead of expiring it.
+ * so a late check starts a VM that is already off instead of expiring it. A popup check and the alarm can overlap,
+ * so records whose phase began after the query was sent are left alone: that answer may predate vm.start.
  * @param {Object} pServer - Server object with id, url and apiKey
  * @param {Object[]} pDomains - vms.domains [{id, state}] from the status query
+ * @param {number} pQueriedAt - Date.now() taken before the status query was sent
  */
-const advanceVMRestarts = async (pServer, pDomains) => {
+const advanceVMRestarts = async (pServer, pDomains, pQueriedAt) => {
 
     const oStates = {};
 
@@ -1215,7 +1217,7 @@ const advanceVMRestarts = async (pServer, pDomains) => {
 
         Object.entries(pAll).forEach(([pKey, pRecord]) => {
 
-            if (pRecord.serverId !== pServer.id || pRecord.phase === 'done') {
+            if (pRecord.serverId !== pServer.id || pRecord.phase === 'done' || pRecord.phaseStartedAt > pQueriedAt) {
                 return;
             }
 
@@ -1288,11 +1290,12 @@ const processVMRestarts = async () => {
 
         try {
 
+            const nQueriedAt = Date.now();
             const oData = await executeGraphQL(oServer.url, oServer.apiKey, QUERY_VM_STATUS);
 
             /* Without a current state no limit is applied */
             if (oData?.vms) {
-                await advanceVMRestarts(oServer, oData.vms.domains || []);
+                await advanceVMRestarts(oServer, oData.vms.domains || [], nQueriedAt);
             }
 
         } catch (_) {
@@ -1357,6 +1360,7 @@ const handleFetchStatus = async (pMessage) => {
         return {error: oServer ? 'INVALID_CONFIG' : 'NO_SERVER'};
     }
 
+    const nQueriedAt = Date.now();
     const oData = await executeGraphQL(oServer.url, oServer.apiKey, sQuery);
 
     if (pMessage.kind !== 'vm') {
@@ -1364,7 +1368,7 @@ const handleFetchStatus = async (pMessage) => {
     }
 
     if (oData?.vms) {
-        await advanceVMRestarts(oServer, oData.vms.domains || []);
+        await advanceVMRestarts(oServer, oData.vms.domains || [], nQueriedAt);
     }
 
     const oRestarts = {};

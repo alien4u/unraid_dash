@@ -46,19 +46,31 @@ def test_action_error_inline(ext, mock, mode, message):
     assert state['toggle']['disabled'] is False and state['toggle']['title'] == 'Start'
 
 
-@pytest.mark.parametrize('mode, message, view_only', [
-    ('forbidden', None, True),
-    ('forbidden_partial', None, True),
-    ('gql', 'error response from daemon: open /mnt/user/appdata/app-09: permission denied', False),
+@pytest.mark.parametrize('action, mode, message, view_only', [
+    ('start', 'forbidden', None, True),
+    ('start', 'forbidden_partial', None, True),
+    ('start', 'gql', 'error response from daemon: open /mnt/user/appdata/app-09: permission denied', False),
+    ('restart', 'forbidden', None, True),
 ])
-def test_permission_text_only_for_forbidden(ext, mock, mode, message, view_only):
-    """AC-69: the permission text and the switch to view-only controls come only from extensions.code FORBIDDEN"""
-    mock.fail('DockerStart', mode, message)
-    page = open_dashboard(ext, mock)
-    page.click(toggle(docker_row('app-09')))
-    state = page.wait_row(docker_row('app-09'), lambda s: s['note'], 10, 'error note')
+def test_permission_text_only_for_forbidden(ext, mock, action, mode, message, view_only):
+    """AC-69: the permission text and the switch to view-only controls come only from extensions.code FORBIDDEN,
+    for container actions and for a VM restart (vm.stop answered FORBIDDEN)"""
     expected = message or 'This API key does not have permission. Use an admin API key for full control.'
-    assert state['note'] == f'Could not start app-09: {expected}'
+    if action == 'start':
+        mock.fail('DockerStart', mode, message)
+        page = open_dashboard(ext, mock)
+        page.click(toggle(docker_row('app-09')))
+        state = page.wait_row(docker_row('app-09'), lambda s: s['note'], 10, 'error note')
+        assert state['note'] == f'Could not start app-09: {expected}'
+    else:
+        mock.fail('VMStop', mode, message)
+        vm = mock.vm('vm-2')
+        page = open_dashboard(ext, mock)
+        page.open_menu(vm_row(vm['id']))
+        page.click_menu_item('Restart')
+        state = page.wait_row(vm_row(vm['id']), lambda s: s['note'], 10, 'error note')
+        assert state['note'] == f'Could not restart vm-2: {expected}'
+        assert 'VMStart' not in mock.ops()
 
     time.sleep(10)
     toggle_state = page.docker('app-01')['toggle']
