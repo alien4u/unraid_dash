@@ -89,63 +89,58 @@ const executeGraphQL = async (pUrl, pApiKey, pQuery, pVariables) => {
         throw pErr;
     }
 
+    /* The GraphQL errors are read once, whatever the status; the class comes from the HTTP status and
+       extensions.code (PLAN section 2), never from the message. A 2xx body must be JSON; others may not be. */
+    const oJson = await oResponse.json().catch((pErr) => {
+
+        if (oResponse.ok) {
+            throw pErr;
+        }
+
+        return null;
+    });
+
+    const aErrors = (Array.isArray(oJson?.errors) ? oJson.errors : []).map((pE) => ({
+        message: pE.message || '',
+        code: pE.extensions?.code || null
+    }));
+
+    /* API 4.37 answers an invalid key with HTTP 200 and UNAUTHENTICATED instead of 401 */
+    if (oResponse.status === 401 || oResponse.status === 403 || aErrors.some((pE) => pE.code === 'UNAUTHENTICATED')) {
+        throw new Error('AUTH_ERROR');
+    }
+
+    const bForbidden = aErrors.some((pE) => pE.code === 'FORBIDDEN');
+
+    /* With partial data FORBIDDEN is left to the caller (hasForbiddenError): dashboard sections show what the key
+       can read, while actions, their status checks and the key type treat it as a permission failure */
+    if (bForbidden && (!oResponse.ok || !oJson?.data)) {
+        throw new Error('PERMISSION_DENIED');
+    }
+
     if (!oResponse.ok) {
 
-        if (oResponse.status === 401 || oResponse.status === 403) {
-            throw new Error('AUTH_ERROR');
-        }
-
-        /* GraphQL often returns 400 with error details in the body */
-        let sDetail = '';
-
-        try {
-
-            const oErrJson = await oResponse.json();
-
-            if (oErrJson.errors && oErrJson.errors.length > 0) {
-                sDetail = oErrJson.errors[0].message;
-            } else if (oErrJson.message) {
-                sDetail = oErrJson.message;
-            }
-
-        } catch (_) {
-            /* Body not JSON */
-        }
-
+        const sDetail = aErrors[0]?.message || oJson?.message || '';
         throw new Error('HTTP_' + oResponse.status + (sDetail ? ': ' + sDetail : ''));
     }
 
-    const oJson = await oResponse.json();
-
-    /* GraphQL can return 200 with partial data + errors; extensions.code decides the class, never the message */
-    if (oJson.errors && oJson.errors.length > 0) {
-
-        const aErrors = oJson.errors.map((pE) => ({message: pE.message || '', code: pE.extensions?.code || null}));
-
-        /* API 4.37 answers an invalid key with HTTP 200 instead of 401 */
-        if (aErrors.some((pE) => pE.code === 'UNAUTHENTICATED')) {
-            throw new Error('AUTH_ERROR');
-        }
-
-        if (oJson.data) {
-            oJson.data._errors = aErrors;
-            return oJson.data;
-        }
-
-        if (aErrors.some((pE) => pE.code === 'FORBIDDEN')) {
-            throw new Error('PERMISSION_DENIED');
-        }
-
-        const oFirstError = aErrors[0];
-
-        if (oFirstError.code === 'GRAPHQL_VALIDATION_FAILED' || isUnsupportedMsg(oFirstError.message)) {
-            throw new Error('UNSUPPORTED: ' + oFirstError.message);
-        }
-
-        throw new Error('GQL_ERROR: ' + oFirstError.message);
+    if (aErrors.length === 0) {
+        return oJson.data;
     }
 
-    return oJson.data;
+    /* Partial data: the failed fields are null and the errors ({message, code}) travel with the data */
+    if (oJson.data) {
+        oJson.data._errors = aErrors;
+        return oJson.data;
+    }
+
+    const oFirstError = aErrors[0];
+
+    if (oFirstError.code === 'GRAPHQL_VALIDATION_FAILED' || isUnsupportedMsg(oFirstError.message)) {
+        throw new Error('UNSUPPORTED: ' + oFirstError.message);
+    }
+
+    throw new Error('GQL_ERROR: ' + oFirstError.message);
 };
 
 /** Retrieves all servers from storage with their decrypted API keys attached */
@@ -439,8 +434,8 @@ const detectKeyType = (pMeData) => {
 };
 
 /**
- * Checks whether partial GraphQL data carries a FORBIDDEN error (the key lacks the permission). Message text
- * is never used: Docker errors such as "permission denied" are server failures, not key problems.
+ * Checks whether partial GraphQL data carries a FORBIDDEN error (the key lacks a permission). Used where an action
+ * outcome or the key type is decided; dashboard sections keep their partial data.
  * @param {Object} pData - The GraphQL response data (may contain _errors [{message, code}])
  * @returns {boolean}
  */
@@ -937,11 +932,7 @@ const handleTestConnection = async (pServer) => {
 
         const oMeData = await executeGraphQL(pServer.url, pServer.apiKey, QUERY_ME);
 
-        if (hasForbiddenError(oMeData)) {
-            sKeyType = 'readonly';
-        } else {
-            sKeyType = detectKeyType(oMeData);
-        }
+        sKeyType = hasForbiddenError(oMeData) ? 'readonly' : detectKeyType(oMeData);
 
     } catch (pErr) {
         if (pErr.message === 'PERMISSION_DENIED') {
@@ -1196,7 +1187,8 @@ const sendRestartCommand = async (pServer, pVmId, pPhase) => {
  * Moves the server's restarts on from the VM states of a fresh status query: SHUTOFF while stopping starts the
  * VM, RUNNING while starting ends the restart. The 5-minute phase limit is checked only after the current state,
  * so a late check starts a VM that is already off instead of expiring it. A popup check and the alarm can overlap,
- * so records whose phase began after the query was sent are left alone: that answer may predate vm.start.
+ * so records whose phase began at or after the moment the query was sent are left alone: that answer may predate
+ * vm.start (Date.now() has millisecond resolution, so equal times count as later).
  * @param {Object} pServer - Server object with id, url and apiKey
  * @param {Object[]} pDomains - vms.domains [{id, state}] from the status query
  * @param {number} pQueriedAt - Date.now() taken before the status query was sent
@@ -1217,7 +1209,7 @@ const advanceVMRestarts = async (pServer, pDomains, pQueriedAt) => {
 
         Object.entries(pAll).forEach(([pKey, pRecord]) => {
 
-            if (pRecord.serverId !== pServer.id || pRecord.phase === 'done' || pRecord.phaseStartedAt > pQueriedAt) {
+            if (pRecord.serverId !== pServer.id || pRecord.phase === 'done' || pRecord.phaseStartedAt >= pQueriedAt) {
                 return;
             }
 
@@ -1294,7 +1286,7 @@ const processVMRestarts = async () => {
             const oData = await executeGraphQL(oServer.url, oServer.apiKey, QUERY_VM_STATUS);
 
             /* Without a current state no limit is applied */
-            if (oData?.vms) {
+            if (oData?.vms && !hasForbiddenError(oData)) {
                 await advanceVMRestarts(oServer, oData.vms.domains || [], nQueriedAt);
             }
 
@@ -1362,6 +1354,10 @@ const handleFetchStatus = async (pMessage) => {
 
     const nQueriedAt = Date.now();
     const oData = await executeGraphQL(oServer.url, oServer.apiKey, sQuery);
+
+    if (hasForbiddenError(oData)) {
+        return {error: 'PERMISSION_DENIED'};
+    }
 
     if (pMessage.kind !== 'vm') {
         return {success: true, data: oData};

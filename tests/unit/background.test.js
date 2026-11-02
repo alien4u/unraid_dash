@@ -122,7 +122,10 @@ describe('executeGraphQL error mapping', () => {
         }));
 
         expect(oData.vars.name).toBe('Tower');
-        expect(oData._errors).toEqual([{message: 'Docker down', code: null}, {message: 'Forbidden resource', code: 'FORBIDDEN'}]);
+        expect(oData._errors).toEqual([
+            {message: 'Docker down', code: null},
+            {message: 'Forbidden resource', code: 'FORBIDDEN'}
+        ]);
     });
 
     test('a validation error without data is UNSUPPORTED', async () => {
@@ -693,6 +696,66 @@ describe('error classification (section 2, AC-68, AC-69)', () => {
             .toEqual({error: 'GQL_ERROR: Forbidden resource', outcome: 'failed'});
     });
 
+    test('a partial Core with FORBIDDEN on notifications still renders the rest; the key type comes from Me', async () => {
+
+        const oCore = structuredClone(fixture('Core').body.data);
+
+        oCore.notifications = null;
+
+        const oBg = await setup({
+            fetch: withOverrides({
+                Core: () => respond(200, {
+                    data: oCore,
+                    errors: [{message: 'Forbidden resource', path: ['notifications'], extensions: {code: 'FORBIDDEN'}}]
+                })
+            })
+        });
+        const oResponse = await oBg.send({action: 'fetchDashboard', serverId: 'server-a'});
+
+        expect(oResponse.error).toBeUndefined();
+        expect(oResponse.keyType).toBe('admin');
+        expect(oResponse.data.vars).toEqual(oCore.vars);
+        expect(oResponse.data.metrics).toEqual(oCore.metrics);
+        expect(oResponse.data.notifications).toBeNull();
+        expect(oResponse.data.docker.containers.length).toBe(31);
+    });
+
+    test('a partial status answer with FORBIDDEN reports PERMISSION_DENIED, not success', async () => {
+
+        const oBg = await setup({
+            fetch: withOverrides({
+                DockerStatus: () => respond(200, {
+                    data: {docker: null},
+                    errors: [{message: 'Forbidden resource', path: ['docker'], extensions: {code: 'FORBIDDEN'}}]
+                })
+            })
+        });
+
+        expect(await oBg.send({action: 'fetchStatus', serverId: 'server-a', kind: 'docker'})).toEqual({error: 'PERMISSION_DENIED'});
+    });
+
+    test.each([
+        [500, 'UNAUTHENTICATED', /^AUTH_ERROR$/],
+        [400, 'UNAUTHENTICATED', /^AUTH_ERROR$/],
+        [400, 'FORBIDDEN', /^PERMISSION_DENIED$/],
+        [500, 'FORBIDDEN', /^PERMISSION_DENIED$/],
+        [500, 'INTERNAL_SERVER_ERROR', /^HTTP_500: boom$/]
+    ])('HTTP %i with extensions.code %s is classified by the code', async (pStatus, pCode, pExpected) => {
+
+        const oBg = await setup({fetch: () => respond(pStatus, {errors: [{message: 'boom', extensions: {code: pCode}}], data: null})});
+
+        await expect(oBg.executeGraphQL('http://tower-a.lan', 'k', 'query Core { vars { name } }')).rejects.toThrow(pExpected);
+    });
+
+    test('HTTP 400 without an auth or permission code stays unsupported for mutations', async () => {
+
+        const oBg = await setup({fetch: withOverrides({DockerPause: () => respondFixture('Validation_error')})});
+        const oResult = await oBg.send({action: 'controlDocker', serverId: 'server-a', containerId: 'c1', command: 'pause'});
+
+        expect(oResult.outcome).toBe('unsupported');
+        expect(oResult.error).toStartWith('HTTP_400: Cannot query field');
+    });
+
     test('a status query answered FORBIDDEN reports PERMISSION_DENIED', async () => {
 
         const oBg = await setup({fetch: withOverrides({DockerStatus: () => respondFixture('Mutation_viewer_forbidden')})});
@@ -815,6 +878,7 @@ describe('VM restart coordinator (AC-70 to AC-72)', () => {
         return oBg;
     };
 
+    /* The clock is fixed: a check only sees a phase that began before it, so tests move the clock between steps */
     const check = (pBg) => pBg.send({action: 'fetchStatus', serverId: 'server-a', kind: 'vm'});
 
     test('restartVM stores the record before vm.stop and starts the one-minute alarm', async () => {
@@ -903,14 +967,61 @@ describe('VM restart coordinator (AC-70 to AC-72)', () => {
         expect(oBg.ops().filter((pOp) => pOp === 'VMStart')).toEqual(['VMStart']);
     });
 
+    test('a stale answer from the same millisecond as the phase change is ignored, so a failed start stays recorded', async () => {
+
+        const oVm = {state: 'RUNNING'};
+        let nStatusCalls = 0;
+        let fnAnswerStale = null;
+        let fnAnswerStart = null;
+        const oBg = await restarted(oVm, {
+            VMStatus: () => {
+
+                nStatusCalls++;
+
+                if (nStatusCalls === 1) {
+                    return new Promise((pFnResolve) => {
+                        fnAnswerStale = () => pFnResolve(respond(200, {data: {vms: {domains: [{id: VM_ID, state: 'RUNNING'}]}}}));
+                    });
+                }
+
+                return respond(200, {data: {vms: {domains: [{id: VM_ID, state: oVm.state}]}}});
+            },
+            VMStart: () => new Promise((pFnResolve) => {
+                fnAnswerStart = () => pFnResolve(gqlError('internal error: process exited while connecting to monitor'));
+            })
+        });
+
+        oBg.setNow(2000);
+        const pStale = check(oBg);
+        await waitFor(() => fnAnswerStale);
+
+        oVm.state = 'SHUTOFF';
+        const pStarting = check(oBg);
+        await waitFor(() => fnAnswerStart);
+        expect(oBg.storage.pendingRestarts[KEY]).toMatchObject({phase: 'starting', phaseStartedAt: 2000});
+
+        fnAnswerStale();
+        await pStale;
+        expect(oBg.storage.pendingRestarts[KEY].phase).toBe('starting');
+
+        fnAnswerStart();
+        await pStarting;
+        expect(oBg.storage.pendingRestarts[KEY]).toMatchObject({
+            phase: 'done',
+            outcome: {result: 'failed', error: 'GQL_ERROR: internal error: process exited while connecting to monitor'}
+        });
+    });
+
     test('RUNNING while starting ends the restart and stops the alarm', async () => {
 
         const oVm = {state: 'RUNNING'};
         const oBg = await restarted(oVm);
 
         oVm.state = 'SHUTOFF';
+        oBg.setNow(2000);
         await check(oBg);
         oVm.state = 'RUNNING';
+        oBg.setNow(3000);
         const oResponse = await check(oBg);
 
         expect(oResponse.restarts).toEqual({});
@@ -932,6 +1043,7 @@ describe('VM restart coordinator (AC-70 to AC-72)', () => {
 
         if (pStep === 'start') {
             oVm.state = 'SHUTOFF';
+            oBg.setNow(2000);
             await check(oBg);
         }
 
@@ -996,12 +1108,34 @@ describe('VM restart coordinator (AC-70 to AC-72)', () => {
         const oBg = await restarted(oVm);
 
         oVm.state = 'SHUTOFF';
+        oBg.setNow(2000);
         oBg.listeners.alarm[0]({name: 'vmRestart'});
         await waitFor(() => oBg.storage.pendingRestarts[KEY]?.phase === 'starting' && oBg.ops().includes('VMStart'));
 
         oVm.state = 'RUNNING';
+        oBg.setNow(3000);
         oBg.listeners.alarm[0]({name: 'vmRestart'});
         await waitFor(() => !oBg.storage.pendingRestarts[KEY] && !oBg.alarms.vmRestart);
+    });
+
+    test('a partial VMStatus with FORBIDDEN is no current state for the coordinator', async () => {
+
+        const oVm = {state: 'RUNNING'};
+        const oBg = await restarted(oVm, {
+            VMStatus: () => respond(200, {
+                data: {vms: {domains: [{id: VM_ID, state: 'SHUTOFF'}]}},
+                errors: [{message: 'Forbidden resource', path: ['vms', 'domains', 0], extensions: {code: 'FORBIDDEN'}}]
+            })
+        });
+
+        oBg.setNow(1000 + 10 * MINUTE);
+        expect(await check(oBg)).toEqual({error: 'PERMISSION_DENIED'});
+        oBg.listeners.alarm[0]({name: 'vmRestart'});
+        await waitFor(() => oBg.ops().filter((pOp) => pOp === 'VMStatus').length === 2);
+        await new Promise((pFnResolve) => setTimeout(pFnResolve, 50));
+
+        expect(oBg.storage.pendingRestarts[KEY].phase).toBe('stopping');
+        expect(oBg.ops()).not.toContain('VMStart');
     });
 
     test('without a current state the alarm applies no limit', async () => {
