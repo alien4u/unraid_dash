@@ -385,6 +385,7 @@ class ChromiumExtension:
     name = 'chromium'
 
     def __init__(self, ext_dir):
+        add_popup_hook(ext_dir)
         self.ext_dir = ext_dir
         self.user_data_dir = tempfile.mkdtemp(prefix='unraid-dash-chromium-')
         self.context = None
@@ -414,9 +415,9 @@ class ChromiumExtension:
             self.context = None
         shutil.rmtree(self.user_data_dir, ignore_errors=True)
 
-    def open_popup(self):
+    def open_popup(self, hold_writes=None):
         page = self.context.new_page()
-        page.goto(self.base + '/popup.html')
+        page.goto(self.base + '/popup.html' + popup_query(hold_writes))
         wrapped = ChromiumPage(page)
         self.pages.append(wrapped)
         return wrapped
@@ -444,10 +445,73 @@ class ChromiumExtension:
         self.pages = []
 
 
+POPUP_HOOK_JS = '''/* Test-only: with ?holdWrites=N the popup lets N storage.local writes through and later ones hang */
+(() => {
+
+    const sAllowed = new URLSearchParams(location.search).get('holdWrites');
+
+    if (sAllowed === null) {
+        return;
+    }
+
+    let nAllowed = Number(sAllowed);
+    const fnSet = chrome.storage.local.set.bind(chrome.storage.local);
+
+    chrome.storage.local.set = (...pArgs) => {
+
+        if (nAllowed-- > 0) {
+            return fnSet(...pArgs);
+        }
+
+        document.documentElement.dataset.heldWrite = '1';
+        return new Promise(() => {});
+    };
+})();
+'''
+
+
+def add_popup_hook(ext_dir):
+    """Test copy only: a script that runs before popup.js, so a test can hold writes made during popup startup."""
+    Path(ext_dir, 'popup_hook.js').write_text(POPUP_HOOK_JS)
+    html = Path(ext_dir, 'popup.html')
+    tag = '<script src="js/popup.js"'
+    source = html.read_text()
+    assert source.count(tag) == 1
+    html.write_text(source.replace(tag, '<script src="popup_hook.js"></script>\n' + tag))
+
+
+def popup_query(hold_writes):
+    return '' if hold_writes is None else f'?holdWrites={hold_writes}'
+
+
+REAL_POPUP_BROWSER = "document.querySelector('browser.webextension-popup-browser')"
+
+REAL_POPUP_STATE_JS = '''() => {
+    const oView = browser.extension.getViews({type: 'popup'})[0];
+    if (!oView) return null;
+    const oDoc = oView.document;
+    if (oDoc.readyState === 'loading' || !oDoc.getElementById('settingsPanel')) return null;
+    const fnValue = (pId) => oDoc.getElementById(pId).value;
+    const oMessage = oDoc.getElementById('message');
+    return {
+        mark: oDoc.documentElement.dataset.testMark ?? null,
+        settings: oDoc.getElementById('settingsPanel').style.display === 'block',
+        form: oDoc.getElementById('serverForm').style.display === 'block',
+        title: oDoc.getElementById('serverFormTitle').textContent,
+        values: {name: fnValue('serverFormName'), url: fnValue('serverFormUrl'), key: fnValue('serverFormKey')},
+        result: oDoc.getElementById('testResult').textContent,
+        dashboard: oDoc.getElementById('dashboard').style.display === 'flex' &&
+            !!oDoc.querySelector('#cardSystem .ut-card-header'),
+        message: oMessage.style.display === 'none' ? null : oMessage.textContent
+    };
+}'''
+
+
 class FirefoxExtension:
     name = 'firefox'
 
     def __init__(self, ext_dir):
+        add_popup_hook(ext_dir)
         self.ext_dir = ext_dir
         self.ext_uuid = str(uuid.uuid4())
         self.profile = Path(tempfile.mkdtemp(prefix='unraid-dash-firefox-'))
@@ -465,6 +529,8 @@ class FirefoxExtension:
             'marionette.port': port,
             'extensions.webextensions.uuids': json.dumps({GECKO_ID: self.ext_uuid}),
             'extensions.webextOptionalPermissionPrompts': False,
+            # Popups under test are tabs here, so a real reopen after a grant would race them for the draft
+            'extensions.openPopupWithoutUserGesture.enabled': False,
             'security.enterprise_roots.enabled': True,
             'app.update.disabledForTesting': True,
             'app.update.auto': False,
@@ -520,9 +586,9 @@ class FirefoxExtension:
             subprocess.run(['pkill', '-f', str(self.profile)])
         shutil.rmtree(self.profile, ignore_errors=True)
 
-    def open_popup(self):
+    def open_popup(self, hold_writes=None):
         self.driver.switch_to.new_window('tab')
-        self.driver.get(self.base + '/popup.html')
+        self.driver.get(self.base + '/popup.html' + popup_query(hold_writes))
         page = FirefoxPage(self, self.driver.current_window_handle)
         self.pages.append(page)
         return page
@@ -549,6 +615,71 @@ class FirefoxExtension:
             return self.driver.execute_script('''
                 const oNote = document.getElementById('addon-webext-permissions-notification');
                 return !!oNote && !oNote.hidden && PopupNotifications.panel.state !== 'closed';''')
+
+    def _chrome(self, script, *args):
+        with self.driver.context(self.driver.CONTEXT_CHROME):
+            return self.driver.execute_script(script, *args)
+
+    def set_open_popup_without_gesture(self, enabled):
+        """On is the default from Firefox 149. Off, action.openPopup rejects as on Firefox 142 to 148."""
+        self._chrome('Services.prefs.setBoolPref("extensions.openPopupWithoutUserGesture.enabled", arguments[0])',
+                     enabled)
+
+    def set_background_idle_ms(self, milliseconds):
+        """How soon the idle background page unloads; None restores the default."""
+        self._chrome('''
+            if (arguments[0] === null) {
+                Services.prefs.clearUserPref('extensions.background.idle.timeout');
+            } else {
+                Services.prefs.setIntPref('extensions.background.idle.timeout', arguments[0]);
+            }''', milliseconds)
+
+    def background_state(self):
+        return self._chrome('return WebExtensionPolicy.getByID(arguments[0]).extension.backgroundState;', GECKO_ID)
+
+    def real_popup_open(self):
+        return self._chrome(f'return !!{REAL_POPUP_BROWSER};')
+
+    def real_popup_state(self):
+        """What the real toolbar popup shows, or None when it is closed."""
+        return self.probe_page.eval(REAL_POPUP_STATE_JS)
+
+    def open_real_popup(self):
+        """Opens the toolbar popup and waits for its startup to render. Needs openPopup without a gesture."""
+        self.probe_page.eval('() => browser.action.openPopup().then(() => true)')
+        wait_until(lambda: (lambda state: state and (state['message'] or state['dashboard'] or state['form']))(
+            self.real_popup_state()), 10, message='real popup startup')
+
+    def close_real_popup(self):
+        """Closes the toolbar popup with its panel, the way losing focus to the prompt or to Allow can."""
+        self._chrome(f'const oBrowser = {REAL_POPUP_BROWSER}; if (oBrowser) oBrowser.closest("panel").hidePopup();')
+        wait_until(lambda: not self.real_popup_open(), 5, message='real popup to close')
+
+    def mark_real_popup(self):
+        """Marks the open popup document, so a test can tell it from a reopened one."""
+        self.probe_page.eval('''() => {
+            browser.extension.getViews({type: 'popup'})[0].document.documentElement.dataset.testMark = '1';
+            return true;
+        }''')
+
+    def submit_real_popup_form(self, button, name, url, key):
+        """Fills the add-server form in the real popup and clicks a form button inside a user input handler, which
+        permissions.request needs. Frame script, because WebDriver cannot reach a toolbar popup."""
+        values = json.dumps({'name': name, 'url': url, 'key': key})
+        code = f'''(function () {{
+            const oDoc = content.document;
+            const oValues = {values};
+            oDoc.getElementById('settingsBtn').click();
+            oDoc.getElementById('addServerBtn').click();
+            oDoc.getElementById('serverFormName').value = oValues.name;
+            oDoc.getElementById('serverFormUrl').value = oValues.url;
+            oDoc.getElementById('serverFormKey').value = oValues.key;
+            const oHandler = content.windowUtils.setHandlingUserInput(true);
+            oDoc.querySelector({json.dumps(button)}).click();
+            oHandler.destruct();
+        }})();'''
+        self._chrome(f"""{REAL_POPUP_BROWSER}.messageManager.loadFrameScript(
+            'data:application/javascript,' + encodeURIComponent(arguments[0]), false);""", code)
 
     def answer_prompt(self, allow, timeout=10):
         """Clicks Allow or Deny on the host permission doorhanger."""

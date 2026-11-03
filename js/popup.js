@@ -96,6 +96,9 @@ const runPopupLogic = async () => {
     const NOTE_SUCCESS_MS = 5000;
     const SUMMARY_MS = 8000;
 
+    const HOST_DENIED_TEXT = 'Host permission denied. The extension needs access to connect to this server.';
+    const HOST_REQUIRED_TEXT = 'Host permission is required to test this connection.';
+
     const oSpinner = document.getElementById('spinner');
     const oMessage = document.getElementById('message');
     const oDashboard = document.getElementById('dashboard');
@@ -3858,11 +3861,25 @@ const runPopupLogic = async () => {
     };
 
     /**
-     * Saves the server form as a staged record: it is stored with a pending-permission marker (plus a
-     * snapshot of the previous record on edit) before the permission answer, because the prompt may
-     * close the popup and end this function. The marker is settled here, or on the next popup open.
+     * Checks the host permission of a server URL without prompting
+     * @param {string} pUrl - The server URL
+     * @returns {Promise<boolean>} True if granted; false for an unparsable URL
      */
-    const saveServerForm = async () => {
+    const isOriginGranted = async (pUrl) => {
+
+        try {
+            return await chrome.permissions.contains({origins: [new URL(pUrl).origin + '/*']});
+        } catch (_) {
+            return false;
+        }
+    };
+
+    /**
+     * Validates the server form and saves it. The draft write and the permission request both run before
+     * the first await: the request must stay synchronous for Firefox, and the prompt may close the popup at
+     * any later point, in which case the next popup open continues from the draft.
+     */
+    const saveServerForm = () => {
 
         const sName = oServerFormName.value.trim();
         const sUrl = oServerFormUrl.value.trim().replace(/\/+$/, '');
@@ -3881,17 +3898,40 @@ const runPopupLogic = async () => {
             return;
         }
 
+        const oDraft = {
+            action: 'save',
+            id: oServerFormId.value || ('server-' + Date.now()),
+            name: sName,
+            url: sUrl,
+            apiKey: sKey
+        };
+
+        chrome.storage.session.set({serverFormDraft: oDraft});
+
         const pGrant = requestHostPermission(sUrl);
 
-        const sId = oServerFormId.value || ('server-' + Date.now());
+        applyServerSave(oDraft, pGrant);
+    };
+
+    /**
+     * Applies a validated save as a staged record: it is stored with a pending-permission marker (plus a
+     * snapshot of the previous record on edit) before the permission answer, because the prompt may
+     * close the popup and end this function. The marker is settled here, or on the next popup open.
+     * @param {Object} pDraft - The form values: {id, name, url, apiKey}
+     * @param {Promise<boolean>|boolean} pGrant - The permission answer, already known when finishing from a draft
+     */
+    const applyServerSave = async (pDraft, pGrant) => {
+
+        const sId = pDraft.id;
+        const sUrl = pDraft.url;
         const nExisting = aServers.findIndex((pS) => pS.id === sId);
         let sPrevUrl = null;
 
         const oServer = {
             id: sId,
-            name: sName,
+            name: pDraft.name,
             url: sUrl,
-            apiKey: sKey,
+            apiKey: pDraft.apiKey,
             enabled: true,
             pendingPermission: true
         };
@@ -3931,7 +3971,8 @@ const runPopupLogic = async () => {
             sActiveServerId = aServers.length > 0 ? aServers[0].id : null;
         }
 
-        if (bGranted && nExisting < 0 && sActiveServerId !== sId) {
+        /* No snapshot means an add, including a record an earlier popup staged before it closed */
+        if (bGranted && !oServer.prev && sActiveServerId !== sId) {
             sActiveServerId = sId;
             resetServerView();
         }
@@ -3954,8 +3995,11 @@ const runPopupLogic = async () => {
 
         await saveStorage();
 
+        /* Only now: a popup that dies on the way here finishes from the draft on the next open */
+        chrome.storage.session.remove('serverFormDraft');
+
         if (!bGranted) {
-            showTestResult('Host permission denied. The extension needs access to connect to this server.', false);
+            showTestResult(HOST_DENIED_TEXT, false);
             return;
         }
 
@@ -4012,6 +4056,40 @@ const runPopupLogic = async () => {
         oTestResult.textContent = pText;
         oTestResult.className = 'ut-test-result ' + (pSuccess ? 'success' : 'error');
         oTestResult.style.display = 'block';
+    };
+
+    /**
+     * Sends a connection test to the background and shows the result in the server form. The host
+     * permission must already be granted.
+     * @param {string} pUrl - The server URL
+     * @param {string} pKey - The API key
+     */
+    const sendConnectionTest = (pUrl, pKey) => {
+
+        oTestConnectionBtn.disabled = true;
+        oTestConnectionBtn.textContent = 'Testing...';
+
+        chrome.runtime.sendMessage({
+            action: 'testConnection',
+            server: {url: pUrl, apiKey: pKey}
+        }, (pResponse) => {
+
+            oTestConnectionBtn.disabled = false;
+            oTestConnectionBtn.textContent = 'Test Connection';
+
+            if (pResponse?.success) {
+
+                const sKeyLabel = pResponse.keyType === 'readonly' ? ' - view-only' : '';
+                showTestResult('Connected to ' + pResponse.name + ' (v' + pResponse.version + ')' + sKeyLabel, true);
+
+            } else {
+
+                showTestResult(getErrorMessage(pResponse?.error), false);
+            }
+
+            /* Only now: a popup that dies before the result runs the test from the draft on the next open */
+            chrome.storage.session.remove('serverFormDraft');
+        });
     };
 
     /** Sets up the auto-refresh interval timer based on current settings */
@@ -4091,35 +4169,27 @@ const runPopupLogic = async () => {
             return;
         }
 
+        /* Before the request and not awaited: the request must stay synchronous for Firefox */
+        chrome.storage.session.set({
+            serverFormDraft: {
+                action: 'test',
+                id: oServerFormId.value,
+                name: oServerFormName.value.trim(),
+                url: sUrl,
+                apiKey: sKey
+            }
+        });
+
         const bGranted = await requestHostPermission(sUrl);
 
         if (!bGranted) {
 
-            showTestResult('Host permission is required to test this connection.', false);
+            showTestResult(HOST_REQUIRED_TEXT, false);
+            chrome.storage.session.remove('serverFormDraft');
             return;
         }
 
-        oTestConnectionBtn.disabled = true;
-        oTestConnectionBtn.textContent = 'Testing...';
-
-        chrome.runtime.sendMessage({
-            action: 'testConnection',
-            server: {url: sUrl, apiKey: sKey}
-        }, (pResponse) => {
-
-            oTestConnectionBtn.disabled = false;
-            oTestConnectionBtn.textContent = 'Test Connection';
-
-            if (pResponse?.success) {
-
-                const sKeyLabel = pResponse.keyType === 'readonly' ? ' - view-only' : '';
-                showTestResult('Connected to ' + pResponse.name + ' (v' + pResponse.version + ')' + sKeyLabel, true);
-
-            } else {
-
-                showTestResult(getErrorMessage(pResponse?.error), false);
-            }
-        });
+        sendConnectionTest(sUrl, sKey);
     });
 
     oRefreshInterval.addEventListener('change', () => {
@@ -4235,19 +4305,28 @@ const runPopupLogic = async () => {
 
     const bKeyError = await loadStorage();
 
+    /* The form of a Save or Test whose prompt closed the popup */
+    const oStoredDraft = (await chrome.storage.session.get('serverFormDraft')).serverFormDraft;
+    const oDraft = bKeyError ? null : oStoredDraft;
+    const bDraftGranted = !!oDraft && await isOriginGranted(oDraft.url);
+    const bDraftSaved = bDraftGranted && oDraft.action === 'save';
+
+    /* A granted draft stays until its action removes it, so a popup that dies right after opening cannot lose it */
+    if (oStoredDraft && !bDraftGranted) {
+        await chrome.storage.session.remove('serverFormDraft');
+    }
+
+    if (bDraftSaved) {
+        await applyServerSave(oDraft, true);
+    }
+
     /* Saves whose permission prompt closed the popup are settled from the actual grant */
     const aStaged = bKeyError ? [] : aServers.filter((pS) => pS.pendingPermission);
     let bStagedKept = false;
 
     for (const oStaged of aStaged) {
 
-        let bGranted = false;
-
-        try {
-            bGranted = await chrome.permissions.contains({origins: [new URL(oStaged.url).origin + '/*']});
-        } catch (_) {
-            /* Unparsable URL: not granted */
-        }
+        const bGranted = await isOriginGranted(oStaged.url);
 
         resolveStagedServer(oStaged.id, bGranted);
         bStagedKept = bStagedKept || bGranted;
@@ -4270,6 +4349,26 @@ const runPopupLogic = async () => {
     applyCompact();
     applyPopupDimensions();
     renderServerTabs();
+
+    if (oDraft && !bDraftSaved) {
+
+        /* Checked after settlement: a rolled back add is no longer stored, so the form is an add again */
+        const bStored = aServers.some((pS) => pS.id === oDraft.id);
+
+        openSettings();
+        openServerForm(bStored ? oDraft : undefined);
+        oServerFormName.value = oDraft.name;
+        oServerFormUrl.value = oDraft.url;
+        oServerFormKey.value = oDraft.apiKey;
+
+        if (oDraft.action === 'save') {
+            showTestResult(HOST_DENIED_TEXT, false);
+        } else if (bDraftGranted) {
+            sendConnectionTest(oDraft.url, oDraft.apiKey);
+        } else {
+            showTestResult(HOST_REQUIRED_TEXT, false);
+        }
+    }
 
     if (bKeyError) {
         showMessageText('Encryption key mismatch -- API keys could not be decrypted. Re-enter your API keys in Settings.', true);

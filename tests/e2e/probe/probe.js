@@ -59,7 +59,7 @@ const storedKeys = async () => {
 window.probe = {
     seed,
     storedKeys,
-    clear: () => browserAPI.storage.local.clear(),
+    clear: () => Promise.all([browserAPI.storage.local.clear(), browserAPI.storage.session.clear()]),
     clearBadge: () => browserAPI.action.setBadgeText({text: ''}),
     get: (pKeys) => browserAPI.storage.local.get(pKeys),
     badge: () => browserAPI.action.getBadgeText({}),

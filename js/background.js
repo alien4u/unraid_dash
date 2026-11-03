@@ -1570,6 +1570,48 @@ browserAPI.runtime.onInstalled.addListener(async () => {
     }
 });
 
+const REOPEN_ATTEMPTS = 3;
+const REOPEN_RETRY_MS = 300;
+
+/**
+ * Reopens the popup when a host permission grant arrives while a server form draft for a granted origin is
+ * waiting, so the user's Save or Test continues by itself. If it cannot be opened, the draft is used the next time
+ * the user opens the popup.
+ */
+const reopenPopupForDraft = async () => {
+
+    if (!browserAPI.action?.openPopup) {
+        return;
+    }
+
+    for (let nAttempt = 0; nAttempt < REOPEN_ATTEMPTS; nAttempt++) {
+
+        if (nAttempt > 0) {
+            await new Promise((pFnResolve) => setTimeout(pFnResolve, REOPEN_RETRY_MS));
+        }
+
+        try {
+
+            const oResult = await new Promise((pFnResolve) => {
+                browserAPI.storage.session.get(['serverFormDraft'], pFnResolve);
+            });
+            const oDraft = oResult.serverFormDraft;
+
+            if (!oDraft || !(await browserAPI.permissions.contains({origins: [new URL(oDraft.url).origin + '/*']}))) {
+                return;
+            }
+
+            await browserAPI.action.openPopup();
+            return;
+
+        } catch (_) {
+            /* The prompt may still hold focus when the event fires, so an early rejection is worth retrying */
+        }
+    }
+};
+
+browserAPI.permissions.onAdded.addListener(reopenPopupForDraft);
+
 browserAPI.alarms.onAlarm.addListener((pAlarm) => {
 
     if (pAlarm.name === 'badgeUpdate') {

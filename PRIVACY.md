@@ -1,6 +1,6 @@
 # Privacy Policy - Unraid Dash
 
-**Last updated:** November 1, 2026
+**Last updated:** November 3, 2026
 
 ## Data Collection
 
@@ -23,6 +23,10 @@ The extension uses your browser's local storage (`chrome.storage.local`) to pers
 - **Unconfirmed server changes** -- while a save waits for the host permission prompt: a pending marker and the previous name, URL and (encrypted) API key, used to undo the change if permission is denied. Removed once the prompt is answered.
 
 These are stored locally in your browser and are **never transmitted** to any external server.
+
+## What Is Held in Memory Only
+
+When you click Save or Test Connection in the server form, the form values (name, URL and API key, the key not yet encrypted) are held in your browser's in-memory session storage (`chrome.storage.session`) so that they are not lost if the permission prompt closes the popup. They are held only until that save or test finishes (at the next popup open, if the popup closed first) or, if permission was denied, until the next popup open. Closing the browser always clears them, and they are **never written to disk**. Nothing leaves your local network.
 
 ## API Key Storage
 

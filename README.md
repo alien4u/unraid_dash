@@ -64,7 +64,7 @@ Supports multiple servers, configurable auto-refresh, per-card visibility and so
 
 ### 🔐 Security
 
-- **Encrypted API key storage** - API keys are encrypted at rest using AES-256-GCM via the Web Crypto API. Keys are never stored in plaintext.
+- **Encrypted API key storage** - API keys are encrypted at rest using AES-256-GCM via the Web Crypto API. Keys are never written to disk in plaintext.
 
 ## 📋 Requirements
 
@@ -149,7 +149,7 @@ All API calls route through the background service worker to avoid CORS restrict
 
 ## 🌐 Browser Compatibility
 
-Chrome, Edge, and Firefox (MV3, 142+).
+Chrome and Edge 127+, Firefox 142+ (MV3).
 
 > The default `manifest.json` targets Chrome and Edge. A `manifest_firefox.json` is included for Firefox, which adds the `background.scripts` fallback and `browser_specific_settings` required by Firefox's extension platform.
 
@@ -167,6 +167,8 @@ Chrome, Edge, and Firefox (MV3, 142+).
 - Parity check progress, speed and last result on the Array card
 - System temperature summary (API 4.37.6+) and hard drive temperature warning/critical colors
 - Fixed saving and editing servers on Firefox, and editing a server no longer deletes it when the permission prompt is denied
+- Fixed the server form losing what you typed when the permission prompt closes the popup
+- The popup reopens by itself after you click Allow on the permission prompt (Chrome/Edge and Firefox 149+)
 - Fixed the toolbar badge disappearing after a browser restart; it now also refreshes after server and notification changes
 - Refresh errors are shown in a strip above the cards instead of being silently ignored
 - Fixed responses from one server overwriting another server's view when switching quickly
@@ -193,7 +195,7 @@ Chrome, Edge, and Firefox (MV3, 142+).
 
 ### v1.1.0 - 2026-03-08
 
-- AES-256-GCM encrypted API key storage via Web Crypto API, keys are never stored in plaintext
+- AES-256-GCM encrypted API key storage via Web Crypto API, keys are never written to disk in plaintext
 - Docker container update indicators (orange dot badge when updates are available, requires Docker Auto Update Check enabled in Unraid)
 - Clickable server name linking directly to the Unraid WebGUI
 - Custom display names for Docker containers and VMs

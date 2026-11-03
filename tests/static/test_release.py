@@ -23,6 +23,14 @@ def test_manifest_versions():
     assert manifest('manifest_firefox.json')['version'] == VERSION
 
 
+def test_minimum_browser_versions():
+    """AC-87: Chrome/Edge 127 for action.openPopup; the Firefox manifest has no Chrome key and keeps 142"""
+    assert manifest('manifest.json')['minimum_chrome_version'] == '127'
+    firefox = manifest('manifest_firefox.json')
+    assert 'minimum_chrome_version' not in firefox
+    assert firefox['browser_specific_settings']['gecko']['strict_min_version'] == '142.0'
+
+
 def test_build_produces_both_packages(tmp_path):
     """AC-51: build.sh run on a copy of the release files (the repo's dist/ is not touched)"""
     if not (ROOT / 'build.sh').exists():
@@ -71,7 +79,7 @@ def test_privacy_lists_new_stored_data():
     assert re.search(r'pending container updates', section, re.I)
     assert re.search(r'pending marker', section, re.I)
     assert re.search(r'pending VM restarts', section, re.I)
-    assert re.search(r'\*\*Last updated:\*\* November 1, 2026', privacy)
+    assert re.search(r'\*\*Last updated:\*\* November 3, 2026', privacy)
 
 
 def test_no_new_permissions_or_html_injection():

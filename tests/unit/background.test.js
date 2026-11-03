@@ -1188,3 +1188,146 @@ describe('VM restart coordinator (AC-70 to AC-72)', () => {
         expect(oBg.ops()).toEqual([]);
     });
 });
+
+describe('popup reopen after a host permission grant (AC-84, AC-85)', () => {
+
+    const ORIGIN = 'http://tower-b.lan/*';
+    const DRAFT = {action: 'test', id: '', name: 'Tower B', url: 'http://tower-b.lan', apiKey: 'admin-key-b'};
+
+    /**
+     * Background with the badge alarm present, a draft for ORIGIN and ORIGIN granted, unless pOptions overrides them
+     * @param {Object} [pOptions] - loadBackground options
+     * @returns {Object} Harness
+     */
+    const setupReopen = (pOptions = {}) => loadBackground({
+        alarms: {badgeUpdate: {name: 'badgeUpdate', periodInMinutes: 5}},
+        session: {serverFormDraft: DRAFT},
+        granted: [ORIGIN],
+        ...pOptions
+    });
+
+    /**
+     * Fires permissions.onAdded and waits for the listener to finish
+     * @param {Object} pBg - Harness
+     * @param {string} [pOrigin] - The origin the event reports
+     * @returns {Promise<undefined>}
+     */
+    const fireAdded = (pBg, pOrigin = ORIGIN) => pBg.listeners.permissionsAdded[0]({origins: [pOrigin], permissions: []});
+
+    test('the listener is registered when the script loads', () => {
+
+        expect(setupReopen().listeners.permissionsAdded.length).toBe(1);
+    });
+
+    test('a draft for a granted origin opens the popup once', async () => {
+
+        const oBg = setupReopen();
+
+        await fireAdded(oBg);
+        expect(oBg.openPopupCalls.length).toBe(1);
+    });
+
+    test('the decision comes from permissions.contains for the draft, not from the origins in the event', async () => {
+
+        const oGrantedDraft = setupReopen();
+        const oUngrantedDraft = setupReopen({granted: []});
+
+        await fireAdded(oGrantedDraft, 'http://other.lan/*');
+        await fireAdded(oUngrantedDraft, ORIGIN);
+
+        expect(oGrantedDraft.openPopupCalls.length).toBe(1);
+        expect(oUngrantedDraft.openPopupCalls.length).toBe(0);
+    });
+
+    test('a rejection is retried 300 ms later and the first success ends it', async () => {
+
+        const oBg = setupReopen({
+            openPopup: (pCall) => {
+
+                if (pCall === 1) {
+                    throw new Error('Could not find an active browser window.');
+                }
+            }
+        });
+
+        await fireAdded(oBg);
+
+        const nGap = oBg.openPopupCalls[1] - oBg.openPopupCalls[0];
+
+        expect(oBg.openPopupCalls.length).toBe(2);
+        expect(nGap).toBeGreaterThanOrEqual(290);
+    });
+
+    test('rejections stop after 3 attempts and no unhandled rejection is left', async () => {
+
+        const aUnhandled = [];
+        const fnTrack = (pReason) => aUnhandled.push(pReason);
+        const oBg = setupReopen({
+            openPopup: () => {
+
+                throw new Error('openPopup() cannot be called while another panel is open');
+            }
+        });
+
+        process.on('unhandledRejection', fnTrack);
+
+        try {
+
+            await expect(fireAdded(oBg)).resolves.toBeUndefined();
+            await new Promise((pFnResolve) => setTimeout(pFnResolve, 350));
+
+        } finally {
+
+            process.off('unhandledRejection', fnTrack);
+        }
+
+        expect(oBg.openPopupCalls.length).toBe(3);
+        expect(aUnhandled).toEqual([]);
+    });
+
+    test('a draft removed between attempts stops the retries', async () => {
+
+        const oBg = setupReopen({
+            openPopup: () => {
+
+                delete oBg.session.serverFormDraft;
+                throw new Error('openPopup() cannot be called while another panel is open');
+            }
+        });
+
+        await fireAdded(oBg);
+        expect(oBg.openPopupCalls.length).toBe(1);
+    });
+
+    test('no draft does not open the popup', async () => {
+
+        const oBg = setupReopen({session: {}});
+
+        await fireAdded(oBg);
+        expect(oBg.openPopupCalls.length).toBe(0);
+    });
+
+    test('a draft whose origin is not granted does not open the popup', async () => {
+
+        const oBg = setupReopen({granted: ['http://other.lan/*']});
+
+        await fireAdded(oBg);
+        expect(oBg.openPopupCalls.length).toBe(0);
+    });
+
+    test('a missing openPopup API does nothing and does not throw', async () => {
+
+        const oBg = setupReopen({openPopup: null});
+
+        await expect(fireAdded(oBg)).resolves.toBeUndefined();
+        expect(oBg.openPopupCalls.length).toBe(0);
+    });
+
+    test('an unparsable draft URL does not open the popup and does not throw', async () => {
+
+        const oBg = setupReopen({session: {serverFormDraft: {...DRAFT, url: 'not a url'}}});
+
+        await expect(fireAdded(oBg)).resolves.toBeUndefined();
+        expect(oBg.openPopupCalls.length).toBe(0);
+    });
+});

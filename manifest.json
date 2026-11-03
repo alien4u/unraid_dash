@@ -3,6 +3,7 @@
   "name": "Unraid Dash",
   "version": "1.3.0",
   "description": "Dashboard popup for monitoring Unraid servers — system, array, Docker, VMs, and notifications at a glance.",
+  "minimum_chrome_version": "127",
   "permissions": [
     "storage",
     "alarms"

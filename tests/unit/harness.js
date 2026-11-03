@@ -117,14 +117,19 @@ export const waitFor = async (pFn, pTimeout = 2000) => {
 
 /**
  * Creates a fresh background context
- * @param {Object} [pOptions] - {storage, alarms, fetch: (request) => Response | Promise<Response>}
+ * @param {Object} [pOptions] - {storage, session, granted: host patterns, alarms,
+ *     openPopup: (nthCall) => result (throw to reject) or null when the API is missing,
+ *     fetch: (request) => Response | Promise<Response>}
  * @returns {Object} Harness with send(), requests, storage, alarms, badge and the script's functions
  */
 export const loadBackground = (pOptions = {}) => {
 
     const oLocal = structuredClone(pOptions.storage || {});
+    const oSession = structuredClone(pOptions.session || {});
+    const aGranted = pOptions.granted || [];
+    const aOpenPopupCalls = [];
     const oAlarms = {...(pOptions.alarms || {})};
-    const oListeners = {message: [], installed: [], startup: [], alarm: []};
+    const oListeners = {message: [], installed: [], startup: [], alarm: [], permissionsAdded: []};
     const oBadge = {text: null, color: null, calls: []};
     const aCreated = [];
     const aRequests = [];
@@ -162,7 +167,11 @@ export const loadBackground = (pOptions = {}) => {
     });
 
     const oChrome = {
-        storage: {local: oStorageArea(oLocal), session: oStorageArea({})},
+        storage: {local: oStorageArea(oLocal), session: oStorageArea(oSession)},
+        permissions: {
+            contains: async (pPermissions) => pPermissions.origins.every((pOrigin) => aGranted.includes(pOrigin)),
+            onAdded: {addListener: (pFn) => oListeners.permissionsAdded.push(pFn)}
+        },
         alarms: {
             get: async (pName) => oAlarms[pName],
             create: (pName, pInfo) => {
@@ -187,6 +196,11 @@ export const loadBackground = (pOptions = {}) => {
             setBadgeBackgroundColor: (pDetails) => {
 
                 oBadge.color = pDetails.color;
+            },
+            openPopup: pOptions.openPopup === null ? undefined : async () => {
+
+                aOpenPopupCalls.push(Date.now());
+                return pOptions.openPopup ? pOptions.openPopup(aOpenPopupCalls.length) : undefined;
             }
         },
         runtime: {
@@ -222,6 +236,7 @@ export const loadBackground = (pOptions = {}) => {
         TextDecoder,
         AbortSignal,
         Response,
+        URL,
         console,
         setTimeout,
         clearTimeout
@@ -263,6 +278,8 @@ export const loadBackground = (pOptions = {}) => {
         requests: aRequests,
         ops: () => aRequests.map((pR) => pR.op),
         storage: oLocal,
+        session: oSession,
+        openPopupCalls: aOpenPopupCalls,
         alarms: oAlarms,
         alarmsCreated: aCreated,
         badge: oBadge,
