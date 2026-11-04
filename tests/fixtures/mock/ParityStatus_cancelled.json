@@ -1,0 +1,17 @@
+{
+  "status": 200,
+  "body": {
+    "data": {
+      "array": {
+        "parityCheckStatus": {
+          "status": "CANCELLED",
+          "progress": 0,
+          "speed": "0",
+          "errors": null,
+          "correcting": null,
+          "date": "2026-11-01T22:19:02.000Z"
+        }
+      }
+    }
+  }
+}

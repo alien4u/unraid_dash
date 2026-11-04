@@ -1,0 +1,22 @@
+[project]
+name = "unraid-dash-tests"
+version = "1.3.0"
+description = "Browser and mock-server tests for Unraid Dash"
+requires-python = ">=3.12"
+dependencies = [
+    "pytest>=8.3",
+    "playwright==1.58.0",
+    "selenium>=4.30",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["e2e", "static"]
+addopts = "-ra"
+markers = [
+    "real: runs against the real Unraid server from the env file (needs --real)",
+    "disruptive: changes container/VM state on the real server",
+    "slow: waits for a 15 s timeout or a 60 s cap",
+]

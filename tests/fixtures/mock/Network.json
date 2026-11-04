@@ -1,0 +1,51 @@
+{
+  "status": 200,
+  "body": {
+    "data": {
+      "network": {
+        "accessUrls": [
+          {
+            "type": "DEFAULT",
+            "name": "Default",
+            "ipv4": "https://tower.example.lan/"
+          },
+          {
+            "type": "LAN",
+            "name": "LAN IPv4",
+            "ipv4": "https://192.0.2.10/"
+          },
+          {
+            "type": "MDNS",
+            "name": "LAN Name",
+            "ipv4": "https://tower/"
+          },
+          {
+            "type": "MDNS",
+            "name": "LAN MDNS",
+            "ipv4": "https://tower.example.lan/"
+          },
+          {
+            "type": "LAN",
+            "name": "FQDN LAN",
+            "ipv4": "https://192-0-2-10.0000000000000000000000000000000000000000.myunraid.net/"
+          },
+          {
+            "type": "WIREGUARD",
+            "name": "FQDN TAILSCALE 0",
+            "ipv4": "https://tower.example.ts.net/"
+          },
+          {
+            "type": "WIREGUARD",
+            "name": "FQDN TAILSCALE 1",
+            "ipv4": "https://192-0-2-10.0000000000000000000000000000000000000000.myunraid.net/"
+          },
+          {
+            "type": "WIREGUARD",
+            "name": "FQDN TAILSCALE 2",
+            "ipv4": null
+          }
+        ]
+      }
+    }
+  }
+}

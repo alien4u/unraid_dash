@@ -1,0 +1,48 @@
+{
+  "status": 200,
+  "body": {
+    "data": {
+      "vars": {
+        "version": "7.3.4",
+        "name": "Tower"
+      },
+      "info": {
+        "os": {
+          "platform": "linux",
+          "distro": "Unraid OS",
+          "release": "7.3 x86_64",
+          "uptime": "2026-10-23T12:18:58.272Z",
+          "hostname": "tower"
+        },
+        "cpu": {
+          "manufacturer": "AMD",
+          "brand": "Ryzen 9 9950X 16-Core Processor",
+          "cores": 16,
+          "threads": 32
+        }
+      },
+      "metrics": {
+        "cpu": {
+          "percentTotal": 19.67042080201172
+        },
+        "memory": {
+          "total": 132543172608,
+          "used": 126864535552,
+          "free": 5678637056,
+          "available": 97457946624,
+          "percentTotal": 26.470790832633455
+        }
+      },
+      "notifications": {
+        "overview": {
+          "unread": {
+            "info": 0,
+            "warning": 0,
+            "alert": 0,
+            "total": 0
+          }
+        }
+      }
+    }
+  }
+}

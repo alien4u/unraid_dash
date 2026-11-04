@@ -1,0 +1,28 @@
+{
+  "status": 200,
+  "body": {
+    "errors": [
+      {
+        "message": "API key validation failed",
+        "locations": [
+          {
+            "line": 3,
+            "column": 3
+          }
+        ],
+        "path": [
+          "vars"
+        ],
+        "extensions": {
+          "code": "UNAUTHENTICATED",
+          "originalError": {
+            "message": "API key validation failed",
+            "error": "Unauthorized",
+            "statusCode": 401
+          }
+        }
+      }
+    ],
+    "data": null
+  }
+}

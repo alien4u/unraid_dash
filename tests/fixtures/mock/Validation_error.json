@@ -1,0 +1,19 @@
+{
+  "status": 400,
+  "body": {
+    "errors": [
+      {
+        "message": "Cannot query field \"notAField\" on type \"UnraidArray\".",
+        "locations": [
+          {
+            "line": 1,
+            "column": 23
+          }
+        ],
+        "extensions": {
+          "code": "GRAPHQL_VALIDATION_FAILED"
+        }
+      }
+    ]
+  }
+}

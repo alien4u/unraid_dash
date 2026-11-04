@@ -1,0 +1,13 @@
+{
+  "status": 200,
+  "body": {
+    "data": {
+      "me": {
+        "roles": [
+          "ADMIN"
+        ],
+        "permissions": []
+      }
+    }
+  }
+}

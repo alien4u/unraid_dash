@@ -1,0 +1,135 @@
+{
+  "status": 200,
+  "body": {
+    "data": {
+      "docker": {
+        "containers": [
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:46e276b8f055dcbe8aaf7fe6798f7e4c420fcb35593bd451bbd3d7d6fe74912b",
+            "webUiUrl": "http://192.0.2.10:8585"
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:634a1fc097924455c9dd603988edcb82d1ac8d96a2ef848dc0eba685f73d1635",
+            "webUiUrl": "http://app-02.example.lan:5678/"
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:34431fb6b37f75d94bea84a9782fff62e7ff1e59704ad8962d3c57a50edf1e70",
+            "webUiUrl": null
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:7c75930613b46e13d45687b62f1e8beeaa27574f63fddddf67d09250f5560f10",
+            "webUiUrl": "http://192.0.2.10:8000"
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:385bb20cc4a37931e43043e3df39c8d31e19ca126aa21f10dab32efb071b661f",
+            "webUiUrl": null
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:ad246e3d1098be459c642bdeb8d2bf5e425fc30ddbdafa539d3785cc834804c9",
+            "webUiUrl": null
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:9fd83c8b6f532d30c242a0ede3ede6d470d57fe4430b413192ce4865d53232da",
+            "webUiUrl": null
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:5eea94b0805589ed671c95ab691ce38f8c7ff19c460008641e1f145bac2c9d42",
+            "webUiUrl": null
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:fc26b8aa48e9b9a02fec3f7af8961906f067f24bd0036138de1bb0f3e12c524e",
+            "webUiUrl": "http://192.0.2.10:80"
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:0fdcebb8b98106e7f5462e4eacbffa220459c27bbc7699f0fc9931ec26273827",
+            "webUiUrl": "http://192.0.2.10:80/"
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:03c149dc4df802ef9742cb8c5975f7f269c7a783a152214a8d9d6003c92a5921",
+            "webUiUrl": "http://192.0.2.10:8181"
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:51e6502fad7c3ce36ff4ccad582796c2d8160ec73926c58aa19bd7dafdd3bcd8",
+            "webUiUrl": null
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:8aafa3eb6af6cc7a45bc79dd408f223fce09051a66692a94889cfa7207f244e0",
+            "webUiUrl": "http://192.0.2.10:6767/system/status"
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:f7f262cb0bd37db65abd173814d9fab7f3a7a6709a9a1ea805204ec0b8fe286e",
+            "webUiUrl": "http://192.0.2.10:11434/"
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:fd66897186b25467693444e9736d31b7a8048f9b3ce61b8549639f0707616d00",
+            "webUiUrl": null
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:3fb937eab661da38eba6d3efabb3b9ee926a8c281618a15571ecca464ef06e1e",
+            "webUiUrl": "http://192.0.2.10:9696"
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:f1f9c6a4cd68baf5712bd34160a68dac712518599d200e8c91b53f82d598c1b8",
+            "webUiUrl": "https://plex.example.lan:32400"
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:8f570cf6deaefd3013cde899636571817f7610e42503adf9a408ec600de25bc0",
+            "webUiUrl": "http://192.0.2.10:9876/"
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:2b1ec9d526d7aacde487dd1da19ba89254d62b55bd4d63dbe7421167e12f591d",
+            "webUiUrl": "http://192.0.2.10:6333/"
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:3cb5356d461ba14031fc39a30d5054128abe09ffbbbb5750806ddea092e23351",
+            "webUiUrl": "http://192.0.2.10:5055/"
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:c84cdca3e648ba7523fc3755eaacea47eeeb9fd12a432029d664254a29c2b040",
+            "webUiUrl": "http://192.0.2.10:6246"
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:37dcf322697425b2c8db008419cf69b0eb5294d6774770b3c865f6001e98ac1d",
+            "webUiUrl": "http://192.0.2.10:8080"
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:55387662148b04b07b1d9af4ac06601c520ff9801edb0f0dcb10add8e812d774",
+            "webUiUrl": "http://192.0.2.10:8383"
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:7c826d2efd0a7bb8ed302acc5c6c737b6c48ad6761e88845f35d2120a54ebb8a",
+            "webUiUrl": "http://192.0.2.10:1010"
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:5dd72444cdfd018776de43d41de7fbab49a028df68f9c5ccbaa84f14f829903b",
+            "webUiUrl": "http://192.0.2.10:8282/"
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:fa33f2431a3cc95c9f6ffa352f8b46619ff68e10a81b143cfb15c414d9d72c61",
+            "webUiUrl": "http://192.0.2.10:8888/"
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:bce8c043e8fac62e5eaa2b8c185f2e10494b82572c0e9619bef2e2533f76a580",
+            "webUiUrl": "http://192.0.2.10:7878"
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:b48bfd2a4a98374d11bda9c6092f1415e0bc2bd99f75c542b96cffc946643be1",
+            "webUiUrl": "http://192.0.2.10:8989/"
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:b067530c6d04e79cab00ce7a66b7fa1750dc49e6abacaaf7533164c1f95682d4",
+            "webUiUrl": "http://192.0.2.10:8686/"
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:6da738898b26b54b0b07f78a57a1492bf913bc256f34066abd1fab024777781a",
+            "webUiUrl": "http://192.0.2.10:7575/"
+          },
+          {
+            "id": "e553eda45274d5b8a8c23a3ba718ab7979cf362d6a258e6b8a8ff5598728e7cd:17935e7abbd088af78aef49058e9b77eb2ac0edeec192768276e38958c5d3dfe",
+            "webUiUrl": "http://192.0.2.10:5216/"
+          }
+        ]
+      }
+    }
+  }
+}

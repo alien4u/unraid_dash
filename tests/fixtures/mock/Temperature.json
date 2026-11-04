@@ -1,0 +1,22 @@
+{
+  "status": 200,
+  "body": {
+    "data": {
+      "metrics": {
+        "temperature": {
+          "summary": {
+            "average": 188133.14982456138,
+            "warningCount": 4,
+            "criticalCount": 3,
+            "hottest": {
+              "current": {
+                "value": 10720140.54,
+                "unit": "CELSIUS"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
