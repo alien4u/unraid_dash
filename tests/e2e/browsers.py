@@ -433,6 +433,9 @@ class ChromiumExtension:
     def badge(self):
         return self.probe('badge')
 
+    def reset_host_grants(self):
+        """Chromium holds its grant from the test manifest."""
+
     def set_prompts(self, enabled):
         """Chromium has no prompt switch; deny paths stub permissions.request instead."""
 
@@ -447,6 +450,15 @@ class ChromiumExtension:
 
 POPUP_HOOK_JS = '''/* Test-only: with ?holdWrites=N the popup lets N storage.local writes through and later ones hang */
 (() => {
+
+    const fnContains = chrome.permissions.contains.bind(chrome.permissions);
+
+    window.aContainsCalls = [];
+    chrome.permissions.contains = (pPermissions) => {
+
+        window.aContainsCalls.push(pPermissions.origins);
+        return fnContains(pPermissions);
+    };
 
     const sAllowed = new URLSearchParams(location.search).get('holdWrites');
 
@@ -485,6 +497,7 @@ def popup_query(hold_writes):
 
 
 REAL_POPUP_BROWSER = "document.querySelector('browser.webextension-popup-browser')"
+MOCK_HOST_PATTERN = 'http://127.0.0.1/*'
 
 REAL_POPUP_STATE_JS = '''() => {
     const oView = browser.extension.getViews({type: 'popup'})[0];
@@ -604,6 +617,21 @@ class FirefoxExtension:
     def badge(self):
         return self.probe('badge')
 
+    def revoke_host_grants(self, keep=()):
+        """Drops the runtime host grants, except keep and whatever the test manifest declares."""
+        declared = self.probe_page.eval('() => browser.runtime.getManifest().host_permissions || []')
+        origins = [origin for origin in self.probe('origins') if origin not in keep and origin not in declared]
+        if origins:
+            self.probe('revoke', origins)
+
+    def reset_host_grants(self):
+        """Where every test starts: the mock's host granted and nothing else. A Firefox grant covers a whole host and
+        persists, so one left by an earlier test would hide the prompt of a later one."""
+        self.revoke_host_grants(keep=[MOCK_HOST_PATTERN])
+        if not self.probe('contains', MOCK_HOST_PATTERN):
+            self.click_probe_grant(MOCK_HOST_PATTERN)
+            wait_until(lambda: self.probe('contains', MOCK_HOST_PATTERN), 10, message='mock host grant')
+
     def set_prompts(self, enabled):
         """With prompts off Firefox grants optional permissions without asking (user input still required)."""
         with self.driver.context(self.driver.CONTEXT_CHROME):
@@ -676,6 +704,20 @@ class FirefoxExtension:
             oDoc.getElementById('serverFormKey').value = oValues.key;
             const oHandler = content.windowUtils.setHandlingUserInput(true);
             oDoc.querySelector({json.dumps(button)}).click();
+            oHandler.destruct();
+        }})();'''
+        self._chrome(f"""{REAL_POPUP_BROWSER}.messageManager.loadFrameScript(
+            'data:application/javascript,' + encodeURIComponent(arguments[0]), false);""", code)
+
+    def save_real_popup_edit(self, index=0):
+        """Opens the edit form of a saved server in the real popup and clicks Save as is, inside a user input handler
+        (see submit_real_popup_form)."""
+        code = f'''(function () {{
+            const oDoc = content.document;
+            oDoc.getElementById('settingsBtn').click();
+            oDoc.querySelectorAll('#serverList .edit-server')[{int(index)}].click();
+            const oHandler = content.windowUtils.setHandlingUserInput(true);
+            oDoc.getElementById('saveServerBtn').click();
             oHandler.destruct();
         }})();'''
         self._chrome(f"""{REAL_POPUP_BROWSER}.messageManager.loadFrameScript(

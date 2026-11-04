@@ -2,7 +2,6 @@
 
 import time
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from browsers import wait_until
 from mock_server import ADMIN_KEY
@@ -16,11 +15,6 @@ def load_env(path):
             key, value = line.split('=', 1)
             env[key.strip()] = value.strip()
     return env
-
-
-def origin_of(url):
-    parts = urlsplit(url)
-    return f'{parts.scheme}://{parts.netloc}'
 
 
 def server_entry(server_id, url, key=ADMIN_KEY, name=None):

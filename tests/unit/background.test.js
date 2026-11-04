@@ -1330,4 +1330,40 @@ describe('popup reopen after a host permission grant (AC-84, AC-85)', () => {
         await expect(fireAdded(oBg)).resolves.toBeUndefined();
         expect(oBg.openPopupCalls.length).toBe(0);
     });
+
+    /* contains() in the harness matches patterns exactly, so a wrong pattern leaves the popup closed */
+    const PORT_DRAFT = {...DRAFT, url: 'http://tower-b.lan:8765'};
+
+    test.each([
+        ['moz-extension:', 'http://tower-b.lan/*', 1],
+        ['moz-extension:', 'http://tower-b.lan:8765/*', 0],
+        ['chrome-extension:', 'http://tower-b.lan:8765/*', 1],
+        ['chrome-extension:', 'http://tower-b.lan/*', 0]
+    ])('under %s a draft on a port checks %s (AC-114, AC-118)', async (pProtocol, pGranted, pOpens) => {
+
+        const oBg = setupReopen({protocol: pProtocol, session: {serverFormDraft: PORT_DRAFT}, granted: [pGranted]});
+
+        await fireAdded(oBg, pGranted);
+        expect(oBg.openPopupCalls.length).toBe(pOpens);
+    });
+
+    test.each(['moz-extension:', 'chrome-extension:'])('under %s a draft with no port checks the same pattern (AC-115)', async (pProtocol) => {
+
+        const oBg = setupReopen({protocol: pProtocol});
+
+        await fireAdded(oBg);
+        expect(oBg.openPopupCalls.length).toBe(1);
+    });
+
+    test('under moz-extension an https URL keeps its scheme in the pattern', async () => {
+
+        const oBg = setupReopen({
+            protocol: 'moz-extension:',
+            session: {serverFormDraft: {...DRAFT, url: 'https://tower-b.lan:443'}},
+            granted: ['https://tower-b.lan/*']
+        });
+
+        await fireAdded(oBg, 'https://tower-b.lan/*');
+        expect(oBg.openPopupCalls.length).toBe(1);
+    });
 });

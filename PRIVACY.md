@@ -1,6 +1,6 @@
 # Privacy Policy - Unraid Dash
 
-**Last updated:** November 3, 2026
+**Last updated:** November 4, 2026
 
 ## Data Collection
 
@@ -15,18 +15,20 @@ The extension communicates exclusively with the Unraid server addresses you conf
 The extension uses your browser's local storage (`chrome.storage.local`) to persist:
 
 - **Server configurations** -- display name, URL, and API key for each server
+- **Encryption key** -- the key used to encrypt your API keys, generated in your browser and stored alongside them
 - **UI preferences** -- theme (dark/light), auto-refresh interval, card visibility, collapsed card state
 - **List settings** -- sort order and visible count for Docker and VM cards, and the custom order per server
 - **Docker URL overrides** -- custom WebUI URLs for individual containers
+- **Custom display names** -- names you set for individual containers and VMs
 - **Pending container updates** -- while an update started from the popup is in progress: server ID, container names and IDs, start time, and result counts. Removed when the update finishes.
 - **Pending VM restarts** -- while a VM restart started from the popup is in progress: server ID, VM ID and name, the current step (stopping or starting) and when it began, and the result once finished. Removed when the restart completes or its result has been shown.
-- **Unconfirmed server changes** -- while a save waits for the host permission prompt: a pending marker and the previous name, URL and (encrypted) API key, used to undo the change if permission is denied. Removed once the prompt is answered.
+- **Unconfirmed server changes** -- while a save waits for the host permission prompt: the new name, URL and (encrypted) API key, a pending marker, and the previous name, URL and (encrypted) API key, used to undo the change if permission is denied. Settled once the prompt is answered, or at the next popup open if the prompt closed the popup: the marker and previous values are removed, and if permission was denied the new values are too.
 
 These are stored locally in your browser and are **never transmitted** to any external server.
 
 ## What Is Held in Memory Only
 
-When you click Save or Test Connection in the server form, the form values (name, URL and API key, the key not yet encrypted) are held in your browser's in-memory session storage (`chrome.storage.session`) so that they are not lost if the permission prompt closes the popup. They are held only until that save or test finishes (at the next popup open, if the popup closed first) or, if permission was denied, until the next popup open. Closing the browser always clears them, and they are **never written to disk**. Nothing leaves your local network.
+When you click Save or Test Connection in the server form, the form values (name, URL and API key, the key not yet encrypted) are held in your browser's in-memory session storage (`chrome.storage.session`) so that they are not lost if the permission prompt closes the popup. They are held only until that save or test finishes or permission is denied; if the popup closed first, that happens at the next popup open. Closing the browser always clears them, and this in-memory copy is **never written to disk**. A save also writes the server to local storage with its API key encrypted, as described under Unconfirmed server changes above. Nothing leaves your local network.
 
 ## API Key Storage
 
@@ -54,9 +56,9 @@ This extension does **not**:
 
 | Permission | Purpose |
 |------------|---------|
-| `storage` | Save server configurations, UI preferences, and URL overrides locally |
+| `storage` | Save server configurations, UI preferences, and URL and name overrides locally |
 | `alarms` | Periodic badge updates for unread notification counts |
-| `optional_host_permissions (http/https)` | Connect to your Unraid servers. Granted per-server when you add one -- you control exactly which hosts the extension can access. |
+| `optional_host_permissions (http/https)` | Connect to your Unraid servers. Granted per server when you click Save or Test Connection -- you control exactly which hosts the extension can access. On Firefox, the grant covers every port on that host. |
 
 All permissions are used exclusively for the extension's core functionality as described above.
 
@@ -64,7 +66,7 @@ All permissions are used exclusively for the extension's core functionality as d
 
 This extension is fully open source. You can audit the complete source code at:
 
-https://github.com/alien4u/unraid-dash
+https://github.com/alien4u/unraid_dash
 
 ## Contact
 

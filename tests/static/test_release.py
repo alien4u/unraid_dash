@@ -79,7 +79,7 @@ def test_privacy_lists_new_stored_data():
     assert re.search(r'pending container updates', section, re.I)
     assert re.search(r'pending marker', section, re.I)
     assert re.search(r'pending VM restarts', section, re.I)
-    assert re.search(r'\*\*Last updated:\*\* November 3, 2026', privacy)
+    assert re.search(r'\*\*Last updated:\*\* November 4, 2026', privacy)
 
 
 def test_no_new_permissions_or_html_injection():

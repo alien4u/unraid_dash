@@ -66,6 +66,8 @@ window.probe = {
     alarm: (pName) => browserAPI.alarms.get(pName).then((pAlarm) => pAlarm || null),
     fireAlarm: (pName) => Promise.resolve(browserAPI.alarms.create(pName, {when: Date.now() + 100})),
     contains: (pOrigin) => browserAPI.permissions.contains({origins: [pOrigin]}),
+    origins: () => browserAPI.permissions.getAll().then((pPermissions) => pPermissions.origins),
+    revoke: (pOrigins) => browserAPI.permissions.remove({origins: pOrigins}),
     send: (pMessage) => browserAPI.runtime.sendMessage(pMessage),
     request: (pOrigin) => browserAPI.permissions.request({origins: [pOrigin]})
 };

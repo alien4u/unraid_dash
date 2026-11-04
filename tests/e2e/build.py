@@ -14,8 +14,8 @@ def build_extension(browser, origins, name=None):
     """Copies the extension into tests/artifacts/<name> with test-only host permissions and the probe page.
 
     Chromium grants manifest host_permissions at install, so permissions.request for a covered
-    origin resolves without the native prompt. Firefox treats MV3 host_permissions as optional;
-    the grant there comes from the extensions.webextOptionalPermissionPrompts pref.
+    origin resolves without the native prompt. Firefox is built with none for the mock, as released,
+    and those grants come from permissions.request (see FirefoxExtension.reset_host_grants).
     """
     dest = ARTIFACTS / (name or f'{browser}-ext')
     if dest.exists():

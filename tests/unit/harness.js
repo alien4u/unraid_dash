@@ -117,7 +117,7 @@ export const waitFor = async (pFn, pTimeout = 2000) => {
 
 /**
  * Creates a fresh background context
- * @param {Object} [pOptions] - {storage, session, granted: host patterns, alarms,
+ * @param {Object} [pOptions] - {storage, session, granted: host patterns, alarms, protocol: location.protocol,
  *     openPopup: (nthCall) => result (throw to reject) or null when the API is missing,
  *     fetch: (request) => Response | Promise<Response>}
  * @returns {Object} Harness with send(), requests, storage, alarms, badge and the script's functions
@@ -237,6 +237,7 @@ export const loadBackground = (pOptions = {}) => {
         AbortSignal,
         Response,
         URL,
+        location: {protocol: pOptions.protocol || 'chrome-extension:'},
         console,
         setTimeout,
         clearTimeout

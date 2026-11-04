@@ -1,5 +1,7 @@
 """Multi-step UI flows shared by the e2e tests."""
 
+from urllib.parse import urlsplit
+
 from browsers import wait_until
 
 AUTH_TEXT = 'Authentication failed. Check your API key in Settings, then try Refresh.'
@@ -64,13 +66,29 @@ def edit_server(page, index=0):
     page.wait(lambda: form_open(page), 5, 'edit form')
 
 
+def host_pattern(ext, url):
+    """The pattern the extension asks for: scheme and host on Firefox, which ignores ports; the origin elsewhere."""
+    parts = urlsplit(url)
+    return f'{parts.scheme}://{parts.hostname if ext.name == "firefox" else parts.netloc}/*'
+
+
+def expect_prompt(ext, page):
+    """Firefox: drops the grant of the host in the form, which would answer the request without a prompt, and turns
+    prompts on. A second port on a granted host asks nothing, so a test that needs the prompt has to start here."""
+    if ext.name == 'firefox':
+        pattern = host_pattern(ext, page.eval("() => document.getElementById('serverFormUrl').value.trim()"))
+        ext.probe('revoke', [pattern])
+        assert not ext.probe('contains', pattern), pattern
+    ext.set_prompts(True)
+
+
 def save_and_deny(ext, page):
     """Clicks Save and denies the host permission: a real Deny click on Firefox, a stubbed answer on Chromium."""
     if ext.name == 'chromium':
         page.stub_permission_request('deny')
         page.click('#saveServerBtn')
     else:
-        ext.set_prompts(True)
+        expect_prompt(ext, page)
         page.click('#saveServerBtn')
         ext.answer_prompt(allow=False)
         ext.set_prompts(False)
@@ -87,7 +105,7 @@ def click_and_close_on_prompt(ext, page, button, ready=None):
     if ext.name == 'chromium':
         page.stub_permission_request('never')
     else:
-        ext.set_prompts(True)
+        expect_prompt(ext, page)
     page.click(button)
     # Read from the popup itself: selecting another Firefox tab dismisses the prompt as a denial
     draft = wait_until(lambda: session_draft(page), 10, message='form draft in storage.session')
@@ -142,7 +160,7 @@ def click_with_open_prompt(ext, page, button):
         }''')
         page.click(button)
     else:
-        ext.set_prompts(True)
+        expect_prompt(ext, page)
         page.click(button)
         wait_until(ext.prompt_shown, 10, message='permission prompt')
 
@@ -158,8 +176,8 @@ def answer_open_prompt(ext, page, allow):
 
 def grant_origin(ext, url):
     """Grants a host permission the way the user would have answered Allow while the popup was closed."""
-    origin = url.rstrip('/') + '/*'
-    if ext.probe('contains', origin):
+    pattern = host_pattern(ext, url)
+    if ext.probe('contains', pattern):
         return
-    ext.click_probe_grant(origin)
-    wait_until(lambda: ext.probe('contains', origin), 10, message=f'grant of {origin}')
+    ext.click_probe_grant(pattern)
+    wait_until(lambda: ext.probe('contains', pattern), 10, message=f'grant of {pattern}')

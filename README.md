@@ -22,7 +22,7 @@
 
 Unraid Dash is a browser extension that gives you a quick dashboard view of your Unraid 7.x servers without opening the WebGUI. Click the extension icon to see CPU, RAM, disk health, running containers, VMs, and unread notifications, all fetched live from the Unraid GraphQL API.
 
-Supports multiple servers, configurable auto-refresh, per-card visibility and sort settings, container/VM start-stop controls, notification archiving, and light/dark themes.
+Supports multiple servers, configurable auto-refresh, per-card visibility and sort settings, container/VM start-stop and resume controls, a More menu with container restart and pause and VM restart, container updates, parity check status, temperatures, container WebUI links, a refresh error strip, notification archiving, and light/dark themes.
 
 ## ✨ Features
 
@@ -43,13 +43,14 @@ Supports multiple servers, configurable auto-refresh, per-card visibility and so
 - Add unlimited servers with display name, URL, and API key.
 - Tab bar for switching between servers.
 - Per-server host permissions, you control exactly which hosts the extension can access.
-- Automatic API key type detection, read-only keys see a full dashboard with mutation controls (start/stop, archive) disabled.
+- Automatic API key type detection, read-only keys see a full dashboard with mutation controls (start/stop, archive) disabled. A key the server reports as forbidden also switches the controls to view-only.
+- The server form keeps what you typed across the browser's permission prompt, and the popup reopens by itself after you click Allow on Chrome and Edge 127+ and Firefox 149+; if it does not reopen, as expected on Firefox 142 to 148, click the toolbar icon and the form or save continues.
 
 ### 📋 List Settings (Docker & VMs)
 
 - **Sort order** - Running first A-Z (default), A-Z, Z-A, or custom drag-and-drop order.
 - **Visible count** - Show 5, 6, 10, 15, 20, or all items before the "Show all" toggle.
-- **Custom order** - Drag-and-drop reordering via a modal interface. New items are appended automatically.
+- **Custom order** - Drag-and-drop reordering via a modal interface. New items are appended automatically. Each server keeps its own order.
 - **Custom display names** - Rename Docker containers and VMs with friendly labels shown on the dashboard.
 
 ### 🎨 UI & Preferences
@@ -61,10 +62,12 @@ Supports multiple servers, configurable auto-refresh, per-card visibility and so
 - **Card order** - Drag-to-reorder dashboard cards in Settings.
 - **Collapsible cards** - Click any card header to collapse/expand. State persists across sessions.
 - **Auto-refresh** - Configurable interval: 30s, 60s, 5 minutes, or off. Silent in-place refresh without popup reload.
+- **Refresh error strip** - A failed refresh with data already on screen shows a strip above the cards: `Last refresh failed: <message>. Showing data from HH:MM.`
 
 ### 🔐 Security
 
 - **Encrypted API key storage** - API keys are encrypted at rest using AES-256-GCM via the Web Crypto API. Keys are never written to disk in plaintext.
+- **Server form draft and pending save** - The form values (key not yet encrypted) are copied to in-memory session storage, never written to disk, until the save or test finishes, the restored form is shown, or the browser closes. A Save also stores the server in local storage marked pending with the key encrypted, undone if permission is denied.
 
 ## 📋 Requirements
 
@@ -77,10 +80,13 @@ Supports multiple servers, configurable auto-refresh, per-card visibility and so
 2. On first use, open Settings (gear icon) and add a server with its URL and API key.
 3. The extension fetches data from the Unraid GraphQL API via the background service worker.
 4. Dashboard cards render with live data. Auto-refresh keeps them updated.
-5. Use start/stop buttons to control Docker containers and VMs directly from the popup.
+5. Use start/stop/resume buttons to control Docker containers and VMs directly from the popup.
 6. Click the notification summary to expand and browse individual notifications. Archive them individually or in bulk.
+7. Open the More menu for container Restart and Pause and VM Restart, and use Update or Update all to update containers (admin key).
+8. A VM Restart shuts the VM down and starts it again, and continues when the popup is closed.
+9. When you click Save or Test Connection in the server form, the browser asks for access to that server if it is not already granted; after you click Allow the popup reopens by itself on Chrome and Edge 127+ and Firefox 149+, and if it does not, click the toolbar icon and the form or save continues.
 
-All API calls route through the background service worker to avoid CORS restrictions. The popup communicates with the service worker via `chrome.runtime.sendMessage`.
+All API calls route through the background service worker to avoid CORS restrictions. The service worker sends all requests and the popup sends none. The popup communicates with the service worker via `chrome.runtime.sendMessage`.
 
 ## 🏗️ Architecture
 
@@ -93,6 +99,8 @@ All API calls route through the background service worker to avoid CORS restrict
         |
         +-- Card settings, collapsible headers, modals
         |
+        +-- chrome.permissions.request (one origin, on Firefox one host, on Save or Test Connection)
+        |
         +-- chrome.runtime.sendMessage
                     |
                     v
@@ -101,21 +109,33 @@ All API calls route through the background service worker to avoid CORS restrict
     background.js
         |
         +-- GraphQL queries (parallel per section)
-        |       Core | Array | Network | Docker | VMs
+        |       Core | Array | Network | Docker | VMs | Parity | Temperature | WebUI
         |
-        +-- Docker/VM control mutations (start/stop)
+        +-- Docker/VM control mutations (start, stop, restart, pause, resume, update)
         |
         +-- Notification queries + archive mutations
         |
-        +-- Badge update via chrome.alarms (every 5 min)
+        +-- chrome.alarms
+        |       badgeUpdate (every 5 min, badge count)
+        |       vmRestart   (every 1 min, only during a VM restart)
+        |
+        +-- permissions.onAdded -> action.openPopup
+        |       (reopens after Allow; if it does not, click the toolbar icon and the form or save continues)
+        |
+        +-- chrome.storage.session
+        |       |
+        |       +-- serverFormDraft (in memory)
         |
         +-- chrome.storage.local
                 |
-                +-- servers[]        (url, name)
+                +-- servers[]        (id, name, url, enabled)
                 +-- encryptedKeys    (AES-256-GCM encrypted API keys)
                 +-- _ek              (raw AES key bytes)
                 +-- settings         (theme, refresh, visibility, list settings)
                 +-- dockerUrlOverrides
+                +-- itemNameOverrides
+                +-- pendingUpdates
+                +-- pendingRestarts
 ```
 
 ## 🔧 Installation
@@ -143,9 +163,9 @@ All API calls route through the background service worker to avoid CORS restrict
 
 | Permission | Purpose |
 |------------|---------|
-| `storage` | Save server configurations, UI preferences, and URL overrides locally |
-| `alarms` | Periodic badge updates for unread notification counts |
-| `optional_host_permissions (http/https)` | Connect to your Unraid servers. Granted per-server when you add one, you control exactly which hosts the extension can access. |
+| `storage` | Save server configurations, UI preferences, and URL overrides locally. In-memory session storage holds the server form draft. |
+| `alarms` | Badge refresh every 5 minutes for unread notification counts, plus a one-minute alarm only while a VM restart runs |
+| `optional_host_permissions (http/https)` | Connect to your Unraid servers. Granted per server origin when you click Save or Test Connection (on Firefox the grant covers every port on that host), you control exactly which hosts the extension can access. |
 
 ## 🌐 Browser Compatibility
 
@@ -168,7 +188,8 @@ Chrome and Edge 127+, Firefox 142+ (MV3).
 - System temperature summary (API 4.37.6+) and hard drive temperature warning/critical colors
 - Fixed saving and editing servers on Firefox, and editing a server no longer deletes it when the permission prompt is denied
 - Fixed the server form losing what you typed when the permission prompt closes the popup
-- The popup reopens by itself after you click Allow on the permission prompt (Chrome/Edge and Firefox 149+)
+- The popup reopens by itself after you click Allow on the permission prompt (Chrome/Edge and Firefox 149+); if it does not, click the toolbar icon and the form or save continues
+- Fixed Firefox not reaching a server on a non-default port after Allow: the grant now covers every port on that host. A server added before this version needs one edit and Save, which asks again
 - Fixed the toolbar badge disappearing after a browser restart; it now also refreshes after server and notification changes
 - Refresh errors are shown in a strip above the cards instead of being silently ignored
 - Fixed responses from one server overwriting another server's view when switching quickly

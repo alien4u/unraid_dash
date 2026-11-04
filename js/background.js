@@ -1574,6 +1574,20 @@ const REOPEN_ATTEMPTS = 3;
 const REOPEN_RETRY_MS = 300;
 
 /**
+ * Builds the host permission pattern for a server URL
+ * @param {string} pUrl - The server URL
+ * @returns {string} The match pattern
+ */
+const getHostPattern = (pUrl) => {
+
+    const oUrl = new URL(pUrl);
+    const bFirefox = location.protocol === 'moz-extension:';
+
+    /* Firefox ignores ports in match patterns, so its grant has to cover the whole host */
+    return (bFirefox ? oUrl.protocol + '//' + oUrl.hostname : oUrl.origin) + '/*';
+};
+
+/**
  * Reopens the popup when a host permission grant arrives while a server form draft for a granted origin is
  * waiting, so the user's Save or Test continues by itself. If it cannot be opened, the draft is used the next time
  * the user opens the popup.
@@ -1597,7 +1611,7 @@ const reopenPopupForDraft = async () => {
             });
             const oDraft = oResult.serverFormDraft;
 
-            if (!oDraft || !(await browserAPI.permissions.contains({origins: [new URL(oDraft.url).origin + '/*']}))) {
+            if (!oDraft || !(await browserAPI.permissions.contains({origins: [getHostPattern(oDraft.url)]}))) {
                 return;
             }
 

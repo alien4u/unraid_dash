@@ -1,8 +1,10 @@
+from urllib.parse import urlsplit
+
 import pytest
 
 from browsers import ChromiumExtension, FirefoxExtension, stop_playwright
 from build import build_extension
-from helpers import load_env, origin_of
+from helpers import load_env
 from mock_server import MockServer
 
 
@@ -38,9 +40,12 @@ def real_env(request):
 
 @pytest.fixture(scope='session')
 def browser(request, browser_name, real_env):
-    origins = ['http://127.0.0.1/*']
+    # No manifest grant for the mock on Firefox: it would cover the host and hide the prompt, and the release has none
+    origins = ['http://127.0.0.1/*'] if browser_name == 'chromium' else []
     if real_env:
-        origins.append(origin_of(real_env['UNRAID_URL']) + '/*')
+        # Same rule as the extension: Firefox ignores ports in match patterns
+        parts = urlsplit(real_env['UNRAID_URL'])
+        origins.append(f"{parts.scheme}://{parts.hostname if browser_name == 'firefox' else parts.netloc}/*")
     ext_dir = build_extension(browser_name, origins)
     session = ChromiumExtension(ext_dir) if browser_name == 'chromium' else FirefoxExtension(ext_dir)
     session.start()
@@ -60,6 +65,7 @@ def ext(browser):
     browser.set_prompts(False)
     browser.probe('clear')
     browser.probe('clearBadge')
+    browser.reset_host_grants()
     yield browser
     browser.close_pages()
     browser.set_prompts(False)

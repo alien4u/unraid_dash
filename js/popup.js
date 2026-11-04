@@ -3839,6 +3839,20 @@ const runPopupLogic = async () => {
     };
 
     /**
+     * Builds the host permission pattern for a server URL
+     * @param {string} pUrl - The server URL
+     * @returns {string} The match pattern
+     */
+    const getHostPattern = (pUrl) => {
+
+        const oUrl = new URL(pUrl);
+        const bFirefox = location.protocol === 'moz-extension:';
+
+        /* Firefox ignores ports in match patterns, so its grant has to cover the whole host */
+        return (bFirefox ? oUrl.protocol + '//' + oUrl.hostname : oUrl.origin) + '/*';
+    };
+
+    /**
      * Requests host permission for the given server URL origin. permissions.request() runs before the
      * first await here, so a caller must invoke this before its own first await: Firefox only accepts the
      * request synchronously inside the click handler.
@@ -3849,9 +3863,7 @@ const runPopupLogic = async () => {
 
         try {
 
-            const oUrl = new URL(pUrl);
-            const sOrigin = oUrl.origin + '/*';
-            const bGranted = await chrome.permissions.request({origins: [sOrigin]});
+            const bGranted = await chrome.permissions.request({origins: [getHostPattern(pUrl)]});
             return !!bGranted;
 
         } catch (_) {
@@ -3868,7 +3880,7 @@ const runPopupLogic = async () => {
     const isOriginGranted = async (pUrl) => {
 
         try {
-            return await chrome.permissions.contains({origins: [new URL(pUrl).origin + '/*']});
+            return await chrome.permissions.contains({origins: [getHostPattern(pUrl)]});
         } catch (_) {
             return false;
         }

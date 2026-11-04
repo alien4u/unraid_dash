@@ -5,9 +5,10 @@ import time
 
 import pytest
 
-from browsers import wait_until
+from browsers import MOCK_HOST_PATTERN, wait_until
 from flows import (AUTH_TEXT, DENIED_TEXT, TEST_DENIED_TEXT, add_server, answer_open_prompt,
-                   click_and_close_on_prompt, click_with_open_prompt, edit_server, form_open, form_title, form_values,
+                   click_and_close_on_prompt, click_with_open_prompt, edit_server, expect_prompt, form_open, form_title,
+                   form_values,
                    grant_origin, hold_storage_writes, keep_draft, save_and_close_on_prompt, save_and_deny,
                    save_answered_with_final_write_held, server_list, session_draft, write_draft, write_held)
 from helpers import seed, server_entry, stored
@@ -59,7 +60,7 @@ def test_save_after_test_connection(ext, mock):
     page = ext.open_popup()
     page.open_add_server_form()
     page.fill_server_form('Tower A', mock.url, ADMIN_KEY)
-    ext.set_prompts(True)
+    expect_prompt(ext, page)
     page.click('#testConnectionBtn')
     if ext.name == 'firefox':
         ext.answer_prompt(allow=True)
@@ -908,9 +909,13 @@ def test_probe_clear_removes_the_draft(ext):
 @pytest.fixture
 def real_popup(browser_name, ext):
     """Firefox only: the real toolbar popup and doorhanger, with openPopup allowed without a gesture as on Firefox 149+.
-    The Chromium prompt cannot be answered from automation, so its reopen is a manual check in TEST-COVERAGE."""
+    The Chromium prompt cannot be answered from automation, so its reopen is a manual check in TEST-COVERAGE.
+    Starts with no host grant at all, as after a fresh install."""
     if browser_name != 'firefox':
         pytest.skip('Firefox only: the Chromium prompt cannot be answered from automation')
+    ext.revoke_host_grants()
+    assert ext.probe('origins') == []
+    assert not ext.probe('contains', MOCK_HOST_PATTERN)
     ext.set_open_popup_without_gesture(True)
     ext.set_prompts(True)
     yield ext
@@ -1040,16 +1045,110 @@ def test_real_popup_reopens_after_the_background_unloaded(real_popup, mock):
         real_popup.set_background_idle_ms(None)
 
 
-def test_real_popup_stays_closed_without_a_matching_draft(real_popup, mock, mock_b):
+def test_real_popup_stays_closed_without_a_matching_draft(real_popup, mock):
     """AC-85: a grant with no draft, or with a draft for an origin still not granted, opens nothing"""
     real_popup.set_prompts(False)
     grant_origin(real_popup, mock.url)
     assert_real_popup_stays_closed(real_popup)
 
     write_draft(real_popup.probe_page, 'test', '', 'Other', f'http://localhost:{mock.port}', ADMIN_KEY)
-    grant_origin(real_popup, mock_b.url)
+    # Another host: a further port on the mock's host adds no grant on Firefox, so no event would fire
+    grant_origin(real_popup, 'http://other-host.invalid')
     assert_real_popup_stays_closed(real_popup)
     assert session_draft(real_popup.probe_page)['name'] == 'Other'
+
+
+@pytest.mark.parametrize('button', [TEST, SAVE], ids=['test', 'save'])
+def test_real_popup_server_on_a_port_works_after_allow(real_popup, mock, button):
+    """AC-114, AC-115, AC-118: no manifest host permission, real popup and doorhanger, mock on a port. The grant is for
+    the host, because Firefox does not honor a port in a host permission and the mock sends no CORS headers."""
+    assert not real_popup.probe_page.eval('() => browser.runtime.getManifest().host_permissions')
+    submit_real_form(real_popup, button, mock.url)
+    real_popup.answer_prompt(allow=True)
+
+    if button == TEST:
+        wait_for_real_result(real_popup, 'Connected to Tower (v7.3.4)')
+    else:
+        wait_until(lambda: not real_popup.real_popup_state()['form'], 10, message='form to close after Save')
+        assert only_server(real_popup)['url'] == mock.url
+        real_popup.close_real_popup()
+        real_popup.open_real_popup()
+        wait_until(lambda: real_popup.real_popup_state()['dashboard'], 15, message='real popup dashboard')
+        assert 'Core' in mock.ops()
+    assert real_popup.probe('origins') == [MOCK_HOST_PATTERN]
+
+
+def test_real_popup_old_port_grant_is_repaired_by_one_edit_and_save(real_popup, mock):
+    """AC-116: a server added before this version holds only the port grant and is unreachable; one edit and Save
+    prompts, obtains the host grant and restores the connection"""
+    real_popup.set_prompts(False)
+    old_pattern = mock.url + '/*'
+    real_popup.click_probe_grant(old_pattern)
+    wait_until(lambda: real_popup.probe('contains', old_pattern), 10, message='old port grant')
+    assert not real_popup.probe('contains', MOCK_HOST_PATTERN)
+    seed(real_popup, [server_entry('server-a', mock.url, ADMIN_KEY, 'Tower A')])
+
+    real_popup.set_prompts(True)
+    real_popup.open_real_popup()
+    state = wait_until(lambda: (lambda pState: pState if pState and pState['message'] else None)(
+        real_popup.real_popup_state()), 20, message='error panel')
+    assert state['message'].startswith('Server is unreachable')
+    assert mock.ops() == []
+
+    real_popup.save_real_popup_edit()
+    wait_until(real_popup.prompt_shown, 10, message='permission prompt')
+    real_popup.answer_prompt(allow=True)
+    wait_until(lambda: not real_popup.real_popup_state()['form'], 10, message='form to close after Save')
+    assert real_popup.probe('contains', MOCK_HOST_PATTERN)
+
+    real_popup.close_real_popup()
+    real_popup.open_real_popup()
+    wait_until(lambda: real_popup.real_popup_state()['dashboard'], 15, message='real popup dashboard')
+    assert 'Core' in mock.ops()
+
+
+@pytest.mark.parametrize('button', [SAVE, TEST], ids=['save', 'test'])
+def test_permission_request_pattern(ext, mock, button):
+    """AC-114, AC-118: Chromium and Edge ask for the origin with its port, Firefox for the host without it"""
+    page = ext.open_popup()
+    page.open_add_server_form()
+    page.fill_server_form('Tower A', mock.url, ADMIN_KEY)
+    page.eval('''() => {
+        window.aRequested = [];
+        chrome.permissions.request = async (pPermissions) => {
+
+            window.aRequested.push(pPermissions.origins);
+            return true;
+        };
+        return true;
+    }''')
+    page.click(button)
+    page.wait(lambda: page.eval('() => window.aRequested.length'), 5, 'permission request')
+    expected = MOCK_HOST_PATTERN if ext.name == 'firefox' else mock.url + '/*'
+    assert page.eval('() => window.aRequested') == [[expected]]
+
+
+def test_background_pattern_in_the_real_worker(browser_name, ext):
+    """AC-114: the reopen check reads location in the service worker, and its retry would swallow an error there.
+    Firefox runs this code in the real reopen tests; the Chromium prompt cannot be answered from automation."""
+    if browser_name != 'chromium':
+        pytest.skip('Chromium only: covered on Firefox by test_real_popup_reopens_after_allow_*')
+    worker = ext.context.service_workers[0]
+    assert worker.evaluate('location.protocol') == 'chrome-extension:'
+    assert worker.evaluate("getHostPattern('http://127.0.0.1:8765')") == 'http://127.0.0.1:8765/*'
+    assert worker.evaluate("getHostPattern('https://tower.lan')") == 'https://tower.lan/*'
+
+
+def test_granted_check_pattern(ext, mock):
+    """AC-114: the check a restored draft relies on uses the same pattern as the request"""
+    page = ext.open_popup()
+    page.wait(lambda: (page.view()['message'] or '').startswith('No servers configured'), 10, 'no-server message')
+    write_draft(page, 'test', '', 'Tower A', mock.url, ADMIN_KEY)
+
+    reopened = ext.open_popup()
+    reopened.wait(lambda: reopened.eval('() => window.aContainsCalls.length'), 10, 'permission check')
+    expected = MOCK_HOST_PATTERN if ext.name == 'firefox' else mock.url + '/*'
+    assert reopened.eval('() => window.aContainsCalls')[0] == [expected]
 
 
 def test_wrong_key_first_server_shows_auth_error(ext, mock):
