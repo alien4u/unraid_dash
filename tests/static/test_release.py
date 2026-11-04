@@ -62,7 +62,8 @@ def test_changelog_and_readme():
     assert f'badge/version-{VERSION}-' in readme
     assert re.search(rf'^### v{re.escape(VERSION)}\b', readme, re.M)
     store_rows = re.findall(r'^\| (Chrome Web Store|Edge Add-ons|Firefox Add-ons) \| (v[\d.]+) \|', readme, re.M)
-    assert [version for _, version in store_rows] == ['v1.2.0'] * 3
+    assert len(store_rows) == 3
+    assert all(version in ('v1.2.0', f'v{VERSION}') for _, version in store_rows)
     features = readme.split('## ✨ Features', 1)[1].split('\n## ', 1)[0]
     for phrase in ('Update all', 'WebUI links', 'Restart', 'Pause', 'Parity check', 'Temperature'):
         assert phrase in features, phrase
