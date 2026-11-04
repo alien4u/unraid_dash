@@ -18,6 +18,8 @@
 | Edge Add-ons | v1.2.0 | [Install](https://microsoftedge.microsoft.com/addons/detail/unraid-dash/mkejneiecljggcdblblgpcfoaipjdpie) |
 | Firefox Add-ons | v1.2.0 | [Install](https://addons.mozilla.org/en-US/firefox/addon/unraid-dash/) |
 
+**v1.3.0 is pending store review.** The stores serve v1.2.0 until it is approved.
+
 ## 📖 Overview
 
 Unraid Dash is a browser extension that gives you a quick dashboard view of your Unraid 7.x servers without opening the WebGUI. Click the extension icon to see CPU, RAM, disk health, running containers, VMs, and unread notifications, all fetched live from the Unraid GraphQL API.
