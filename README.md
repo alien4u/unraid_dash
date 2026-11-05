@@ -14,11 +14,9 @@
 
 | Store | Version | Link |
 |-------|---------|------|
-| Chrome Web Store | v1.2.0 | [Install](https://chromewebstore.google.com/detail/agdbddldhhjehjplobapnnpijojcaafk) |
-| Edge Add-ons | v1.2.0 | [Install](https://microsoftedge.microsoft.com/addons/detail/unraid-dash/mkejneiecljggcdblblgpcfoaipjdpie) |
+| Chrome Web Store | v1.3.0 | [Install](https://chromewebstore.google.com/detail/agdbddldhhjehjplobapnnpijojcaafk) |
+| Edge Add-ons | v1.3.0 | [Install](https://microsoftedge.microsoft.com/addons/detail/unraid-dash/mkejneiecljggcdblblgpcfoaipjdpie) |
 | Firefox Add-ons | v1.3.0 | [Install](https://addons.mozilla.org/en-US/firefox/addon/unraid-dash/) |
-
-**v1.3.0 is pending review on the Chrome Web Store and Edge Add-ons.** Those stores serve v1.2.0 until it is approved.
 
 ## 📖 Overview
 
